@@ -171,6 +171,8 @@ def password_reset_confirm(request, uidb64, token):
     return Response({"error": "Invalid token or user ID"}, status=status.HTTP_400_BAD_REQUEST)
 
 
+logger = logging.getLogger(__name__)
+
 # KYC Update View
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated])  # Ensure user is authenticated
@@ -179,9 +181,11 @@ def update_kyc_status(request):
         user = request.user
         profile = user.userprofile
         serializer = UserProfileSerializer(profile, data=request.data, partial=True)
+        
         if serializer.is_valid():
             serializer.save()
-            return Response({"message": "Profile updated successfully", "data": serializer.data})
+            return Response({"message": "Profile updated successfully", "data": serializer.data}, status=status.HTTP_200_OK)
+        
         return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
     except UserProfile.DoesNotExist:
         return Response({"error": "User profile not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -190,50 +194,58 @@ def update_kyc_status(request):
 class KYCSubmissionView(APIView):
     permission_classes = [IsAuthenticated]  # Ensure the user is authenticated
 
-    @staticmethod
-    def post(request):
+    def post(self, request):
         serializer = KYCRequestSerializer(data=request.data)
+        
         if serializer.is_valid():
             # Save the KYC data to your KYC model
-            KYCRequest.objects.create(
-                user=request.user,
+            kyc_request = KYCRequest.objects.create(
+                user_profile=request.user.userprofile,
                 document_type=serializer.validated_data['document_type'],
-                document_file=serializer.validated_data['document_file'],
-                address_proof_file=serializer.validated_data['address_proof_file'],
-                selfie_file=serializer.validated_data['selfie_file']
+                id_document=serializer.validated_data['document_file'],
+                address_document=serializer.validated_data['address_proof_file'],
+                selfie=serializer.validated_data['selfie_file'],
+                status='pending'  # Start with pending status
             )
+            logger.info(f"KYC submitted successfully for user {request.user.id}.")
             return Response({"message": "KYC submitted successfully, pending approval."},
                             status=status.HTTP_201_CREATED)
+        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class KYCStatusView(APIView):
     permission_classes = [IsAuthenticated]  # Ensure user is authenticated
 
-    @staticmethod
-    def get(request):
+    def get(self, request):
         user = request.user
         try:
-            kyc = KYCRequest.objects.get(user=user)
-            return Response({"kyc_status": kyc.status}, status=status.HTTP_200_OK)
+            kyc_request = KYCRequest.objects.get(user_profile=user.userprofile)
+            return Response({"kyc_status": kyc_request.status}, status=status.HTTP_200_OK)
         except KYCRequest.DoesNotExist:
             return Response({"error": "KYC not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 def process_kyc_for_user(user):
+    """Processes KYC verification for a given user."""
     try:
-        # Call external KYC service or perform local verification
-        kyc_status = KYCRequest.verify(user)
+        kyc_request = KYCRequest.objects.get(user_profile=user.userprofile)
+        
+        # Call the KYC verification logic (this should be async in production)
+        kyc_status = KYCRequest.verify(user)  # Assuming this function exists in KYCRequest
 
         # Update the KYCRequest object with the KYC status
-        kyc_request = KYCRequest.objects.get(user=user)
         kyc_request.status = kyc_status
         kyc_request.save()
 
+        logger.info(f"KYC verification succeeded for user {user.id}. Status: {kyc_status}")
         return kyc_status
 
+    except KYCRequest.DoesNotExist:
+        logger.error(f"KYC request not found for user {user.id}.")
+        return "KYC request not found"
     except Exception as e:
-        # Log the error
+        # Log the error and raise an appropriate message
         logger.error(f"KYC verification failed for user {user.id}: {str(e)}")
         raise  # Reraise or handle as necessary
 
