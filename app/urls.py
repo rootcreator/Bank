@@ -28,5 +28,5 @@ urlpatterns = [
     path('transaction/status/<str:transaction_id>/', views.transaction_status, name='transaction_status'),
     path('webhook/<str:provider>/', views.payment_webhook, name='payment_webhook'),
 
-
+    path('status/', health_check, name='health_check'),
 ]
