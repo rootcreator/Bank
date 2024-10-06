@@ -14,6 +14,8 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 
+from .tasks import async_process_kyc
+
 def submit_kyc(request):
     if request.method == 'POST':
         user_profile = get_object_or_404(UserProfile, user=request.user)
@@ -26,9 +28,9 @@ def submit_kyc(request):
             address_document=request.FILES['address_document'],
             status='pending'
         )
-        
-        # Start processing the KYC asynchronously
-        process_kyc(kyc_request)
+
+        # Start processing the KYC asynchronously using Celery
+        async_process_kyc.delay(kyc_request.id)
 
         return JsonResponse({'message': 'KYC submitted successfully!'}, status=201)
 
