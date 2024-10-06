@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 # Register
-@@api_view(['POST'])
+@api_view(['POST'])
 @permission_classes([AllowAny])
 def register_user(request):
     with transaction.atomic():
