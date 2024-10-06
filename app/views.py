@@ -214,6 +214,23 @@ class KYCStatusView(APIView):
             return Response({"error": "KYC not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
+def process_kyc_for_user(user):
+    # Example logic to verify the user's KYC
+    # This can involve external KYC services like Jumio, Onfido, etc.
+    
+    # Call external KYC service or perform local verification
+    # For simplicity, we’ll assume we get a status back from the service
+    
+    # Example of possible statuses: "approved", "pending", "rejected"
+    kyc_status = external_kyc_service.verify(user)
+
+    # Update the KYCRequest object with the KYC status
+    kyc_request = KYCRequest.objects.get(user=user)
+    kyc_request.status = kyc_status
+    kyc_request.save()
+
+    return kyc_status
+
 # Account
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
