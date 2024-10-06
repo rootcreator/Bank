@@ -191,6 +191,8 @@ def update_kyc_status(request):
         return Response({"error": "User profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
+from kyc.tasks import async_process_kyc  # Import the Celery task
+
 class KYCSubmissionView(APIView):
     permission_classes = [IsAuthenticated]  # Ensure the user is authenticated
 
@@ -207,7 +209,11 @@ class KYCSubmissionView(APIView):
                 selfie=serializer.validated_data['selfie_file'],
                 status='pending'  # Start with pending status
             )
-            logger.info(f"KYC submitted successfully for user {request.user.id}.")
+
+            # Start processing the KYC asynchronously
+            async_process_kyc.delay(kyc_request.id)  # Trigger the Celery task
+            
+            logger.info(f"KYC submitted successfully for user {request.user.id}. Task ID: {kyc_request.id}")
             return Response({"message": "KYC submitted successfully, pending approval."},
                             status=status.HTTP_201_CREATED)
         
