@@ -173,6 +173,7 @@ def password_reset_confirm(request, uidb64, token):
 
 # KYC Update View
 @api_view(['PUT'])
+@permission_classes([IsAuthenticated])  # Ensure user is authenticated
 def update_kyc_status(request):
     try:
         user = request.user
@@ -180,13 +181,15 @@ def update_kyc_status(request):
         serializer = UserProfileSerializer(profile, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Profile updated successfully", "data": serializer.data})
+        return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
     except UserProfile.DoesNotExist:
         return Response({"error": "User profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 class KYCSubmissionView(APIView):
+    permission_classes = [IsAuthenticated]  # Ensure the user is authenticated
+
     @staticmethod
     def post(request):
         serializer = KYCRequestSerializer(data=request.data)
@@ -205,31 +208,34 @@ class KYCSubmissionView(APIView):
 
 
 class KYCStatusView(APIView):
+    permission_classes = [IsAuthenticated]  # Ensure user is authenticated
+
     @staticmethod
-    def get(request, user_id):
+    def get(request):
+        user = request.user
         try:
-            kyc = KYCRequest.objects.get(user__id=user_id)
+            kyc = KYCRequest.objects.get(user=user)
             return Response({"kyc_status": kyc.status}, status=status.HTTP_200_OK)
         except KYCRequest.DoesNotExist:
             return Response({"error": "KYC not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 def process_kyc_for_user(user):
-    # Example logic to verify the user's KYC
-    # This can involve external KYC services like Jumio, Onfido, etc.
-    
-    # Call external KYC service or perform local verification
-    # For simplicity, we’ll assume we get a status back from the service
-    
-    # Example of possible statuses: "approved", "pending", "rejected"
-    kyc_status = external_kyc_service.verify(user)
+    try:
+        # Call external KYC service or perform local verification
+        kyc_status = external_kyc_service.verify(user)
 
-    # Update the KYCRequest object with the KYC status
-    kyc_request = KYCRequest.objects.get(user=user)
-    kyc_request.status = kyc_status
-    kyc_request.save()
+        # Update the KYCRequest object with the KYC status
+        kyc_request = KYCRequest.objects.get(user=user)
+        kyc_request.status = kyc_status
+        kyc_request.save()
 
-    return kyc_status
+        return kyc_status
+
+    except Exception as e:
+        # Log the error
+        logger.error(f"KYC verification failed for user {user.id}: {str(e)}")
+        raise  # Reraise or handle as necessary
 
 # Account
 @api_view(['GET'])
