@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 # Register
-@api_view(['POST'])
+@@api_view(['POST'])
 @permission_classes([AllowAny])
 def register_user(request):
     with transaction.atomic():
@@ -49,22 +49,6 @@ def register_user(request):
                 usd_account = USDAccount.objects.create(profile=profile, balance=0.0)
 
                 send_verification_email(request, user)
-
-                try:
-                    # Fetch KYC information for the user
-                    kyc = KYCRequest.objects.get(user=user)
-
-                    # Check if KYC is approved
-                    if kyc.status != "approved":
-                        # Rollback if KYC is not approved
-                        raise Exception("KYC not approved")
-
-                except KYCRequest.DoesNotExist:
-                    return Response({"error": "KYC not found"}, status=status.HTTP_404_NOT_FOUND)
-                except Exception as e:
-                    # Rollback transaction and return error if KYC fails
-                    transaction.set_rollback(True)
-                    return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
                 # Successful registration
                 return Response({
