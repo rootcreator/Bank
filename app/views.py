@@ -122,6 +122,15 @@ class LoginView(KnoxLoginView):
         return super(LoginView, self).post(request, format=None)
 
 
+# Logout
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def logout_view(request):
+    """Logout a user, deleting the authentication token."""
+    request.auth.delete()
+    return Response({"message": "Logged out successfully."}, status=status.HTTP_204_NO_CONTENT)
+
+
 # Reset Auth
 @api_view(['POST'])
 def password_reset_request(request):
@@ -254,6 +263,8 @@ def process_kyc_for_user(user):
         # Log the error and raise an appropriate message
         logger.error(f"KYC verification failed for user {user.id}: {str(e)}")
         raise  # Reraise or handle as necessary
+
+
 
 # Account
 @api_view(['GET'])
@@ -430,3 +441,12 @@ def circle_webhook(request):
         return Response({"message": "Transaction status updated."}, status=status.HTTP_200_OK)
     except Transaction.DoesNotExist:
         return Response({"error": "Transaction not found."}, status=status.HTTP_404_NOT_FOUND)
+
+# Service Status
+@api_view(['GET'])
+def health_check(request):
+    """Check the health of the service."""
+    return Response({"status": "healthy"}, status=status.HTTP_200_OK)
+
+
+
