@@ -223,7 +223,7 @@ class KYCStatusView(APIView):
 def process_kyc_for_user(user):
     try:
         # Call external KYC service or perform local verification
-        kyc_status = external_kyc_service.verify(user)
+        kyc_status = KYCRequest.verify(user)
 
         # Update the KYCRequest object with the KYC status
         kyc_request = KYCRequest.objects.get(user=user)
