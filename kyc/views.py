@@ -12,11 +12,12 @@ from .services import (
     verify_faces,
 )
 
+
 logger = logging.getLogger(__name__)
 
-from .tasks import async_process_kyc
 
 def submit_kyc(request):
+    from .tasks import async_process_kyc
     if request.method == 'POST':
         user_profile = get_object_or_404(UserProfile, user=request.user)
 
@@ -34,21 +35,23 @@ def submit_kyc(request):
 
         return JsonResponse({'message': 'KYC submitted successfully!'}, status=201)
 
+
 def process_kyc(kyc_request):
     logger.info(f'Starting KYC processing for user {kyc_request.user_profile.user}')
-    
+
     # Step 1: Verify KYC
     verification_result = verify_kyc(kyc_request)
 
     # Step 2: Update KYC status based on verification result
     kyc_request.status = verification_result
     kyc_request.save()
-    
+
     if verification_result == 'approved':
         logger.info('KYC approved successfully.')
         send_approval_notification(kyc_request.user_profile.user)
     else:
         logger.warning(f'KYC rejected: {verification_result}')
+
 
 def verify_kyc(kyc_request):
     """Verify KYC documents and return status."""
@@ -60,8 +63,9 @@ def verify_kyc(kyc_request):
         return 'rejected: AML check failed'
     if not verify_faces(kyc_request.selfie):
         return 'rejected: Face verification failed'
-    
+
     return 'approved'
+
 
 def kyc_status(request):
     """Check the status of the user's KYC request."""

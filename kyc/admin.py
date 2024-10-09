@@ -1,11 +1,17 @@
 from django.contrib import admin
+
+from app.models import UserProfile
 from .models import KYCRequest, Notification
 
 
-@admin.register(KYCRequest)
-class KYCApplicationAdmin(admin.ModelAdmin):
-    list_display = ('user_profile', 'id_document', 'status', 'created_at')
-    list_filter = ('status', 'created_at')
+class KYCRequestAdmin(admin.ModelAdmin):
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "user":
+            kwargs["queryset"] = UserProfile.objects.all()
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
+admin.site.register(KYCRequest, KYCRequestAdmin)
 
 
 @admin.register(Notification)

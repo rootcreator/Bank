@@ -1,17 +1,14 @@
 from django.urls import path
 from . import views
 from .views import password_reset_request, password_reset_confirm, account_view, balance_view, \
-    transaction_view
-from knox import views as knox_views
-from .views import LoginView
+    transaction_view, health_check, LoginView, logout_view
+
 
 urlpatterns = [
     path('register/', views.register_user, name='register_user'),
-    path('activate/<uidb64>/<token>/', views.activate_account, name='activate'),
 
     path('login/', LoginView.as_view(), name='login'),
-    path('logout/', knox_views.LogoutView.as_view(), name='logout'),
-    path('logout-all/', knox_views.LogoutAllView.as_view(), name='logoutall'),
+    path('logout/', logout_view, name='logout'),
 
     path('password-reset/', password_reset_request, name='password_reset_request'),
     path('password-reset-confirm/<uidb64>/<token>/', password_reset_confirm, name='password_reset_confirm'),

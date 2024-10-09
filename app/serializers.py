@@ -1,11 +1,12 @@
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, authenticate
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import UserProfile, Transaction, USDAccount, Fee
+from .models import UserProfile, Transaction, USDAccount, Fee, Region
+
+User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True)
 
     class Meta:
         model = User
@@ -21,14 +22,12 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
 
-User = get_user_model()
-
-
 class UserProfileSerializer(serializers.ModelSerializer):
+    region = serializers.PrimaryKeyRelatedField(queryset=Region.objects.all(), required=False)
+
     class Meta:
         model = UserProfile
-        fields = ['id', 'kyc_status', 'region', 'birth_date']
-
+        fields = ['address', 'phone_number', 'region', 'country', 'date_of_birth']
 
 
 class TransactionSerializer(serializers.ModelSerializer):

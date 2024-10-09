@@ -1,19 +1,21 @@
 from celery import shared_task
 import logging
 from .models import KYCRequest  # Import at the top for better practice
-from .views import process_kyc  # Importing the process function
+  # Importing the process function
 
 logger = logging.getLogger(__name__)
 
+
 @shared_task(bind=True)
 def async_process_kyc(self, kyc_request_id):
+    from .views import process_kyc
     """
     Asynchronously process the KYC request by its ID.
     """
     try:
         kyc_request = KYCRequest.objects.get(id=kyc_request_id)
         logger.info(f'Starting KYC processing for request ID {kyc_request_id}.')
-        
+
         # Call the process_kyc function to handle the actual processing
         process_kyc(kyc_request)
         logger.info(f'KYC processing completed for request ID {kyc_request_id}.')

@@ -1,3 +1,4 @@
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -25,8 +26,10 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework_simplejwt',
     'corsheaders',
-    'knox',
+    'drf_yasg',
+    'django_countries',
     'app',
     'kyc',
 ]
@@ -63,36 +66,31 @@ TEMPLATES = [
 WSGI_APPLICATION = 'bank.wsgi.application'
 
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': ('knox.auth.TokenAuthentication',),
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+}
 
-    'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle'
-    ],
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/day',
-        'user': '1000/day'
-    },
-
+# Optionally, you can define JWT settings
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=1440),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
 SECURE_SSL_REDIRECT = False
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 
-# 4. Configure Knox settings
-REST_KNOX = {
-    'TOKEN_TTL': timedelta(hours=10),
-    'USER_SERIALIZER': 'path.to.your.UserSerializer',
-}
-
 CORS_ALLOW_ALL_ORIGINS = True
 
-CORS_ALLOWED_ORIGINS = [
+#CORS_ALLOWED_ORIGINS = [
 
-    "http://127.0.0.1:8000",  # If running Django on a different port
-    "http://localhost:59900",
-]
+#    "http://127.0.0.1:8000",  # If running Django on a different port
+#    "http://localhost:61459",
+#]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",  # Allow all ports on localhost
@@ -143,7 +141,14 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
+# Define STATIC_ROOT to specify where static files will be collected
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
 STATIC_URL = 'static/'
+
+STATICFILES_DIRS = [
+    BASE_DIR / "static",  # If you have additional static directories
+]
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
@@ -168,9 +173,6 @@ USDC_ISSUER_PUBLIC_KEY = 'GADJU2EVVSDDJ5KSZFWG5PL4TG5C53H2V2S7A2Z6SBEU7DTLPPUSWZ
 
 AUTH_USER_MODEL = 'app.User'
 
-
-
-
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -187,9 +189,7 @@ LOGGING = {
     },
 }
 
-
 CELERY_BROKER_URL = 'redis://localhost:6379/0'  # Or your chosen broker
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
-

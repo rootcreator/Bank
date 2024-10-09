@@ -1,77 +1,131 @@
 import logging
 from email.message import EmailMessage
-from django.contrib.auth import login
+
+from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
-from django.contrib.auth.tokens import default_token_generator, PasswordResetTokenGenerator
+from django.contrib.auth.tokens import default_token_generator
 from django.contrib.sites.shortcuts import get_current_site
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
 from django.template.loader import render_to_string
 from django.utils.encoding import force_bytes
-from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from knox.views import LoginView as KnoxLoginView
-from rest_framework import permissions
+from django_countries import countries
 from rest_framework import status
-from rest_framework.authtoken.serializers import AuthTokenSerializer
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from . import serializers
-from .models import UserProfile, Transaction, USDAccount
-from .serializers import UserSerializer, UserProfileSerializer, USDAccountSerializer, TransactionSerializer
-from .services.transact import DepositService, WithdrawalService, TransferService
-from .services.stellar_anchor_service import StellarAnchorService
-from kyc.serializers import KYCRequestSerializer
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 from kyc.models import KYCRequest
+from kyc.serializers import KYCRequestSerializer
+from kyc.tasks import async_process_kyc  # Import the Celery task
+from . import serializers
+from .models import Transaction, USDAccount
+from .models import UserProfile, Region  # Ensure to import the Region model
+from .serializers import UserSerializer, UserProfileSerializer, USDAccountSerializer, TransactionSerializer
+from .services.stellar_anchor_service import StellarAnchorService
+from .services.transact import DepositService, WithdrawalService, TransferService
 
 logger = logging.getLogger(__name__)
 
+User = get_user_model()
 
-# Register
+
+def get_country_code(country_name):
+    for code, name in dict(countries).items():
+        if name.lower() == country_name.lower():
+            return code
+    return None
+
+
+# Registration
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def register_user(request):
-    with transaction.atomic():
-        user_serializer = UserSerializer(data=request.data)
-        if user_serializer.is_valid():
+    try:
+        with transaction.atomic():
+            user_data = {
+                'username': request.data.get('username'),
+                'email': request.data.get('email'),
+                'password': request.data.get('password')
+            }
+            profile_data = request.data.get('profile', {})
+
+            logger.info(f"Incoming registration data: {user_data}")
+
+            # Validate and create user
+            user_serializer = UserSerializer(data=user_data)
+            if not user_serializer.is_valid():
+                logger.error(f"User serializer errors: {user_serializer.errors}")
+                return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
             user = user_serializer.save()
 
-            profile_data = request.data.get('profile', {})
+            # Handle region
+            region_name = profile_data.get('region')
+            if region_name:
+                try:
+                    region = Region.objects.get(name=region_name)
+                    profile_data['region'] = region.id
+                except Region.DoesNotExist:
+                    user.delete()  # Rollback user creation
+                    return Response({"error": f"Invalid region: {region_name}"}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Handle country
+            country_name = profile_data.get('country')
+            if country_name:
+                country_code = get_country_code(country_name)
+                if country_code:
+                    profile_data['country'] = country_code
+                else:
+                    user.delete()  # Rollback user creation
+                    return Response({"error": f"Invalid country: {country_name}"}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Validate profile data
             profile_serializer = UserProfileSerializer(data=profile_data)
+            if not profile_serializer.is_valid():
+                logger.error(f"Profile serializer errors: {profile_serializer.errors}")
+                user.delete()  # Rollback user creation
+                return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            if profile_serializer.is_valid():
-                profile = profile_serializer.save(user=user)
-                usd_account = USDAccount.objects.create(profile=profile, balance=0.0)
+            # Create UserProfile
+            profile = profile_serializer.save(user=user)
 
-                send_verification_email(request, user)
+            # Create USD account
+            usd_account = USDAccount.objects.create(user=user, balance=0.0)
 
-                # Successful registration
-                return Response({
-                    'user': user_serializer.data,
-                    'profile': profile_serializer.data,
-                    "is_verified": user.is_verified,
-                    'usd_account': {'id': usd_account.id, 'balance': usd_account.balance},
-                }, status=status.HTTP_201_CREATED)
+            return Response({
+                'user': UserSerializer(user).data,
+                'profile': UserProfileSerializer(profile).data,
+                'usd_account': {'id': usd_account.id, 'balance': usd_account.balance},
+            }, status=status.HTTP_201_CREATED)
 
-            return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class AccountActivationTokenGenerator(PasswordResetTokenGenerator):
-    def _make_hash_value(self, user, timestamp):
-        return str(user.pk) + str(timestamp) + (user.is_active or '')
-
-
-account_activation_token = AccountActivationTokenGenerator()
+    except IntegrityError as e:
+        logger.error(f"IntegrityError during user registration: {str(e)}")
+        return Response({'error': 'A unique constraint error occurred'}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Unexpected error during user registration: {str(e)}")
+        return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# Helper function for email verification (if needed)
+def create_kyc_request(profile, user):
+    # Create a new KYCRequest
+    KYCRequest.objects.create(
+        user=profile,  # Use the UserProfile instance
+        full_name=user.get_full_name(),
+        date_of_birth=profile.date_of_birth,
+        address=profile.address,
+        status='pending'
+    )
+
+
+# Helper function for email verification (optional)
 def send_verification_email(request, user):
     current_site = get_current_site(request)
     mail_subject = 'Activate your account.'
@@ -79,25 +133,10 @@ def send_verification_email(request, user):
         'user': user,
         'domain': current_site.domain,
         'uid': urlsafe_base64_encode(force_bytes(user.pk)),
-        'token': account_activation_token.make_token(user),
+        # No activation token needed anymore
     })
     email = EmailMessage(mail_subject, message, to=[user.email])
     email.send()
-
-
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def activate_account(request, uidb64, token):
-    uid = force_str(urlsafe_base64_decode(uidb64))
-    user = User.objects.filter(pk=uid).first()
-
-    if user and account_activation_token.check_token(user, token):
-        user.is_active = True
-        user.save()
-        return Response({'message': 'Thank you for your email confirmation. Now you can log in.'},
-                        status=status.HTTP_200_OK)
-
-    return Response({'error': 'Activation link is invalid!'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 def validate_user_data(data):
@@ -111,24 +150,31 @@ def validate_user_data(data):
 
 
 # Login
-class LoginView(KnoxLoginView):
-    permission_classes = (permissions.AllowAny,)
+class LoginView(TokenObtainPairView):
+    permission_classes = (AllowAny,)
 
-    def post(self, request, format=None):
-        serializer = AuthTokenSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = serializer.validated_data['user']
-        login(request, user)
-        return super(LoginView, self).post(request, format=None)
+    def post(self, request, *args, **kwargs):
+        serializer = TokenObtainPairSerializer(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+            return Response(serializer.validated_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # Logout
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def logout_view(request):
-    """Logout a user, deleting the authentication token."""
-    request.auth.delete()
-    return Response({"message": "Logged out successfully."}, status=status.HTTP_204_NO_CONTENT)
+    """Logout a user by blacklisting the token."""
+    try:
+        # Get the token from the request
+        token = request.auth
+        # Blacklist the token
+        BlacklistedToken.objects.create(token=token)
+        return Response({"message": "Logged out successfully."}, status=status.HTTP_204_NO_CONTENT)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # Reset Auth
@@ -180,8 +226,6 @@ def password_reset_confirm(request, uidb64, token):
     return Response({"error": "Invalid token or user ID"}, status=status.HTTP_400_BAD_REQUEST)
 
 
-logger = logging.getLogger(__name__)
-
 # KYC Update View
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated])  # Ensure user is authenticated
@@ -190,80 +234,82 @@ def update_kyc_status(request):
         user = request.user
         profile = user.userprofile
         serializer = UserProfileSerializer(profile, data=request.data, partial=True)
-        
+
         if serializer.is_valid():
             serializer.save()
-            return Response({"message": "Profile updated successfully", "data": serializer.data}, status=status.HTTP_200_OK)
-        
+            return Response({"message": "Profile updated successfully", "data": serializer.data},
+                            status=status.HTTP_200_OK)
+
         return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
     except UserProfile.DoesNotExist:
         return Response({"error": "User profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
-
-from kyc.tasks import async_process_kyc  # Import the Celery task
 
 class KYCSubmissionView(APIView):
     permission_classes = [IsAuthenticated]  # Ensure the user is authenticated
 
     def post(self, request):
         serializer = KYCRequestSerializer(data=request.data)
-        
+
         if serializer.is_valid():
-            # Save the KYC data to your KYC model
             kyc_request = KYCRequest.objects.create(
                 user_profile=request.user.userprofile,
                 document_type=serializer.validated_data['document_type'],
                 id_document=serializer.validated_data['document_file'],
                 address_document=serializer.validated_data['address_proof_file'],
                 selfie=serializer.validated_data['selfie_file'],
-                status='pending'  # Start with pending status
+                status='pending'
             )
 
-            # Start processing the KYC asynchronously
             async_process_kyc.delay(kyc_request.id)  # Trigger the Celery task
-            
+
             logger.info(f"KYC submitted successfully for user {request.user.id}. Task ID: {kyc_request.id}")
             return Response({"message": "KYC submitted successfully, pending approval."},
                             status=status.HTTP_201_CREATED)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class KYCStatusView(APIView):
     permission_classes = [IsAuthenticated]  # Ensure user is authenticated
 
-    def get(self, request):
-        user = request.user
+    @staticmethod
+    def get(request):
+        user_profile = request.user.userprofile  # Get the UserProfile object from the user
+
         try:
-            kyc_request = KYCRequest.objects.get(user_profile=user.userprofile)
+            # Fetch KYCRequest using the correct user_profile
+            kyc_request = KYCRequest.objects.get(user_profile=user_profile)
             return Response({"kyc_status": kyc_request.status}, status=status.HTTP_200_OK)
+
         except KYCRequest.DoesNotExist:
-            return Response({"error": "KYC not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "KYC request not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
-def process_kyc_for_user(user):
+def process_kyc_for_user(user_profile):
     """Processes KYC verification for a given user."""
     try:
-        kyc_request = KYCRequest.objects.get(user_profile=user.userprofile)
-        
-        # Call the KYC verification logic (this should be async in production)
-        kyc_status = KYCRequest.verify(user)  # Assuming this function exists in KYCRequest
+        # Fetch the KYC request related to the user profile
+        kyc_request = KYCRequest.objects.get(user_profile=user_profile)
 
-        # Update the KYCRequest object with the KYC status
+        # Call the KYC verification logic (Assuming verify is a method in the KYCRequest model)
+        kyc_status = kyc_request.verify()  # If 'verify' is a static or instance method
+
+        # Update the status in KYCRequest model
         kyc_request.status = kyc_status
         kyc_request.save()
 
-        logger.info(f"KYC verification succeeded for user {user.id}. Status: {kyc_status}")
+        logger.info(f"KYC verification succeeded for user {user_profile.id}. Status: {kyc_status}")
         return kyc_status
 
     except KYCRequest.DoesNotExist:
-        logger.error(f"KYC request not found for user {user.id}.")
+        logger.error(f"KYC request not found for user {user_profile.id}.")
         return "KYC request not found"
+
     except Exception as e:
         # Log the error and raise an appropriate message
-        logger.error(f"KYC verification failed for user {user.id}: {str(e)}")
+        logger.error(f"KYC verification failed for user {user_profile.id}: {str(e)}")
         raise  # Reraise or handle as necessary
-
 
 
 # Account
@@ -442,11 +488,9 @@ def circle_webhook(request):
     except Transaction.DoesNotExist:
         return Response({"error": "Transaction not found."}, status=status.HTTP_404_NOT_FOUND)
 
+
 # Service Status
 @api_view(['GET'])
 def health_check(request):
     """Check the health of the service."""
     return Response({"status": "healthy"}, status=status.HTTP_200_OK)
-
-
-

@@ -1,5 +1,6 @@
 import uuid
 from django.db import models
+from django_countries.fields import CountryField
 from django.contrib.auth.models import AbstractUser
 
 TRANSACTION_TYPES = (
@@ -7,6 +8,13 @@ TRANSACTION_TYPES = (
     ('withdrawal', 'Withdrawal'),
     ('transfer', 'Transfer'),
 )
+
+
+class Region(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.name  # No parentheses
 
 
 class User(AbstractUser):
@@ -35,46 +43,25 @@ class User(AbstractUser):
 
 
 class UserProfile(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    birth_date = models.DateField(null=True, blank=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     phone_number = models.CharField(max_length=15)
-    date_of_birth = models.DateField()
+    date_of_birth = models.DateField(null=True, blank=True)
+    id_document = models.FileField(upload_to='kyc_documents/')
+    selfie = models.FileField(upload_to='kyc_documents/')
     address = models.CharField(max_length=255)
+    address_document = models.FileField(upload_to='kyc_documents/')
+    country = CountryField(blank_label='(select country)', null=True, blank=True)
+    region = models.ForeignKey(Region, null=True, blank=True, on_delete=models.CASCADE)
     is_kyc_completed = models.BooleanField(default=False)
     kyc_status = models.CharField(
         max_length=50,
         choices=[("pending", "Pending"), ("rejected", "Rejected"), ("approved", "Approved")],
         default="pending"
     )
-    region = models.CharField(
-        max_length=50,
-        choices=[("AF", "Africa"), ("EU", "Europe"), ("US", "United States"), ("LATAM", "Latin America")]
-    )
 
     def __str__(self):
-        return f"{self.user.username} - {self.kyc_status}"
-
-
-class Fee(models.Model):
-    transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPES)
-    flat_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    percentage_fee = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
-    is_active = models.BooleanField(default=True)
-
-    def __str__(self):
-        return f"{self.transaction_type.capitalize()} Fee"
-
-    def calculate_fee(self, amount):
-        percentage_cost = (self.percentage_fee / 100) * amount
-        total_fee = self.flat_fee + percentage_cost
-        return total_fee
-
-    @classmethod
-    def apply_transaction_fee(cls, transaction_type, amount):
-        fee = cls.objects.get(transaction_type=transaction_type, is_active=True)
-        fee_amount = fee.calculate_fee(amount)
-        total_amount = amount + fee_amount
-        return total_amount, fee_amount
+        return f"{self.user} - {self.kyc_status}"
 
 
 class USDAccount(models.Model):
@@ -104,6 +91,28 @@ class USDAccount(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - Balance: ${self.balance}"
+
+
+class Fee(models.Model):
+    transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPES)
+    flat_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    percentage_fee = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.transaction_type.capitalize()} Fee"
+
+    def calculate_fee(self, amount):
+        percentage_cost = (self.percentage_fee / 100) * amount
+        total_fee = self.flat_fee + percentage_cost
+        return total_fee
+
+    @classmethod
+    def apply_transaction_fee(cls, transaction_type, amount):
+        fee = cls.objects.get(transaction_type=transaction_type, is_active=True)
+        fee_amount = fee.calculate_fee(amount)
+        total_amount = amount + fee_amount
+        return total_amount, fee_amount
 
 
 class Transaction(models.Model):
