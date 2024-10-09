@@ -1,49 +1,102 @@
-import json
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
+from polaris.sep24.transaction import create_transaction, get_transaction
+from app.models import Transaction, USDAccount
+from kyc.models import KYCRequest
 from django.conf import settings
-from polaris.sep24.transaction import get_transaction
-from app.models import Transaction, USDAccount  # Ensure USDAccount is imported
+from django.shortcuts import get_object_or_404
 from decimal import Decimal
-from .services import StellarAnchorService  # Import your service for handling updates
 
-@csrf_exempt  # To allow POST requests from external sources
-def transaction_webhook(request):
-    if request.method == 'POST':
+class StellarAnchorService:
+    def initiate_deposit(self, user, amount):
+        # Check KYC status
+        kyc_request = get_object_or_404(KYCRequest, user=user.userprofile)
+        if kyc_request.status != 'approved':
+            return {'error': 'KYC verification is not approved.'}
+
         try:
-            # Parse the incoming request data
-            data = json.loads(request.body)
+            # Create deposit transaction through Polaris
+            transaction = create_transaction(
+                asset_code="USDC",
+                account=settings.STELLAR_PLATFORM_PUBLIC_KEY,  # Use the single custody account
+                amount=str(amount),
+                kind="deposit"
+            )
 
-            # Verify shared secret for security
-            provided_secret = request.headers.get('X-Polaris-Signature')
-            expected_secret = settings.POLARIS_WEBHOOK_SECRET
-            if not constant_time_compare(provided_secret, expected_secret):
-                return JsonResponse({'error': 'Invalid secret'}, status=403)
+            # Record the transaction in your system's ledger
+            Transaction.objects.create(
+                user=user,
+                amount=amount,
+                transaction_type='deposit',
+                status='pending',
+                external_transaction_id=transaction.id  # Polaris transaction ID
+            )
 
-            # Verify the required fields are present
-            transaction_id = data.get('transaction_id')
-            if not transaction_id:
-                return JsonResponse({'error': 'transaction_id is required'}, status=400)
-
-            # Get the transaction details from Polaris
-            transaction = get_transaction(transaction_id)
-            if transaction.status == 'completed':
-                # Find the corresponding transaction in your local database
-                local_transaction = Transaction.objects.get(external_transaction_id=transaction_id)
-
-                # Update the user's balance based on transaction type
-                stellar_service = StellarAnchorService()
-                if local_transaction.transaction_type == 'deposit':
-                    stellar_service.update_balance(local_transaction.user, Decimal(transaction.amount_in), 'deposit')
-                elif local_transaction.transaction_type == 'withdrawal':
-                    stellar_service.update_balance(local_transaction.user, Decimal(transaction.amount_in), 'withdrawal')
-
-            return JsonResponse({'status': 'success'}, status=200)
-
-        except Transaction.DoesNotExist:
-            return JsonResponse({'error': 'Transaction not found'}, status=404)
+            return {
+                'status': 'initiated',
+                'transaction_id': transaction.id,
+                'more_info_url': transaction.more_info_url  # URL to Polaris interactive flow
+            }
 
         except Exception as e:
-            return JsonResponse({'error': str(e)}, status=500)
+            return {'error': str(e)}
 
-    return JsonResponse({'error': 'Invalid request method'}, status=405)
+    def initiate_withdrawal(self, user, amount):
+        # Check KYC status
+        kyc_request = get_object_or_404(KYCRequest, user=user.userprofile)
+        if kyc_request.status != 'approved':
+            return {'error': 'KYC verification is not approved.'}
+
+        try:
+            # Create withdrawal transaction through Polaris
+            transaction = create_transaction(
+                asset_code="USDC",
+                account=settings.STELLAR_PLATFORM_PUBLIC_KEY,  # Use the single custody account
+                amount=str(amount),
+                kind="withdrawal"
+            )
+
+            # Record the transaction in your system's ledger
+            Transaction.objects.create(
+                user=user,
+                amount=amount,
+                transaction_type='withdrawal',
+                status='pending',
+                external_transaction_id=transaction.id
+            )
+
+            return {
+                'status': 'initiated',
+                'transaction_id': transaction.id,
+                'more_info_url': transaction.more_info_url  # URL to Polaris interactive flow
+            }
+
+        except Exception as e:
+            return {'error': str(e)}
+
+    def check_transaction_status(self, transaction_id):
+        try:
+            # Use Polaris to check the status of a transaction
+            transaction = get_transaction(transaction_id)
+
+            # If the transaction is completed, update the user's balance
+            if transaction.status == "completed":
+                local_transaction = Transaction.objects.get(external_transaction_id=transaction_id)
+                if local_transaction.transaction_type == 'deposit':
+                    self.update_balance(local_transaction.user, Decimal(transaction.amount_in), 'deposit')
+                elif local_transaction.transaction_type == 'withdrawal':
+                    self.update_balance(local_transaction.user, Decimal(transaction.amount_in), 'withdrawal')
+
+            return {
+                'status': transaction.status,
+                'amount': transaction.amount_in,
+                'transaction_id': transaction.id
+            }
+        except Exception as e:
+            return {'error': str(e)}
+
+    def update_balance(self, user, amount, transaction_type):
+        """Update user's USDAccount balance based on transaction type."""
+        usd_account = user.usd_account
+        if transaction_type == 'deposit':
+            usd_account.deposit(amount)
+        elif transaction_type == 'withdrawal':
+            usd_account.withdraw(amount)
