@@ -1,9 +1,16 @@
 from polaris.sep24.transaction import create_transaction, get_transaction
-from app.models import Transaction
+from app.models import Transaction, UserProfile
+from kyc.models import KYCRequest
 from django.conf import settings
+from django.shortcuts import get_object_or_404
 
 class StellarAnchorService:
     def initiate_deposit(self, user, amount):
+        # Check KYC status
+        kyc_request = get_object_or_404(KYCRequest, user=user.userprofile)
+        if kyc_request.status != 'approved':
+            return {'error': 'KYC verification is not approved.'}
+
         try:
             # Create deposit transaction through Polaris
             transaction = create_transaction(
@@ -33,6 +40,11 @@ class StellarAnchorService:
             return {'error': str(e)}
 
     def initiate_withdrawal(self, user, amount):
+        # Check KYC status
+        kyc_request = get_object_or_404(KYCRequest, user=user.userprofile)
+        if kyc_request.status != 'approved':
+            return {'error': 'KYC verification is not approved.'}
+
         try:
             # Create withdrawal transaction through Polaris
             transaction = create_transaction(
