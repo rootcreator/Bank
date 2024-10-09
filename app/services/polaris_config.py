@@ -15,3 +15,10 @@ POLARIS_INTEGRATIONS = {
     'deposit': 'app.services.polaris.CustomDepositIntegration',  # Custom deposit logic
     'withdraw': 'app.services.polaris.CustomWithdrawIntegration'  # Custom withdrawal logic
 }
+
+
+POLARIS_SETTINGS = {
+    # Other Polaris settings...
+    'WEBHOOK_URL': 'https://yourdomain.com/webhook/transaction/',  # Your webhook URL
+    'WEBHOOK_SECRET': 'your_shared_secret',  # Your secret for verifying requests
+}
