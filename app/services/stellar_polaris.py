@@ -1,8 +1,9 @@
 from polaris.sep24.transaction import create_transaction, get_transaction
-from app.models import Transaction, UserProfile
+from app.models import Transaction, USDAccount
 from kyc.models import KYCRequest
 from django.conf import settings
 from django.shortcuts import get_object_or_404
+from decimal import Decimal
 
 class StellarAnchorService:
     def initiate_deposit(self, user, amount):
@@ -36,7 +37,6 @@ class StellarAnchorService:
             }
 
         except Exception as e:
-            # Handle and log errors
             return {'error': str(e)}
 
     def initiate_withdrawal(self, user, amount):
@@ -70,13 +70,21 @@ class StellarAnchorService:
             }
 
         except Exception as e:
-            # Handle and log errors
             return {'error': str(e)}
 
     def check_transaction_status(self, transaction_id):
         try:
             # Use Polaris to check the status of a transaction
             transaction = get_transaction(transaction_id)
+            
+            # If the transaction is completed, update the user's balance
+            if transaction.status == "completed":
+                local_transaction = Transaction.objects.get(external_transaction_id=transaction_id)
+                if local_transaction.transaction_type == 'deposit':
+                    self.update_balance(local_transaction.user, Decimal(transaction.amount_in), 'deposit')
+                elif local_transaction.transaction_type == 'withdrawal':
+                    self.update_balance(local_transaction.user, Decimal(transaction.amount_in), 'withdrawal')
+
             return {
                 'status': transaction.status,
                 'amount': transaction.amount_in,
@@ -84,3 +92,11 @@ class StellarAnchorService:
             }
         except Exception as e:
             return {'error': str(e)}
+
+    def update_balance(self, user, amount, transaction_type):
+        """Update user's USDAccount balance based on transaction type."""
+        usd_account = user.usd_account
+        if transaction_type == 'deposit':
+            usd_account.deposit(amount)
+        elif transaction_type == 'withdrawal':
+            usd_account.withdraw(amount)
