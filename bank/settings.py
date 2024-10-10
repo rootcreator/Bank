@@ -2,6 +2,8 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+import environ
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -27,6 +29,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework.authtoken',
     'corsheaders',
     'drf_yasg',
     'django_countries',
@@ -86,11 +89,11 @@ CSRF_COOKIE_SECURE = False
 
 CORS_ALLOW_ALL_ORIGINS = True
 
-#CORS_ALLOWED_ORIGINS = [
+# CORS_ALLOWED_ORIGINS = [
 
 #    "http://127.0.0.1:8000",  # If running Django on a different port
 #    "http://localhost:61459",
-#]
+# ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",  # Allow all ports on localhost
@@ -168,6 +171,7 @@ CIRCLE_API_SECRET = '69942947473566b7623b7961bfbd5996:4d7135bf215a27897b846c1f24
 CIRCLE_API_URL = 'https://api.circle.com/v1/'  # Update with the correct endpoint
 
 STELLAR_PLATFORM_SECRET = 'SATHRILKUJWMBOARZ6JIZJH5ZQIDUWAGG4GSFRREOMM7E55UKMYTWHQA'
+STELLAR_PLATFORM_PUBLIC_KEY = 'GAA5KXEVD2SNZUPK47E235UKVSYJWHREUKXIDMT5BI36RAI34U2RRNJ7'
 ANCHOR_URL = 'https://api.circle.com/v1'
 USDC_ISSUER_PUBLIC_KEY = 'GADJU2EVVSDDJ5KSZFWG5PL4TG5C53H2V2S7A2Z6SBEU7DTLPPUSWZSK'
 
@@ -193,3 +197,8 @@ CELERY_BROKER_URL = 'redis://localhost:6379/0'  # Or your chosen broker
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+
+SERVER_JWT_KEY = '0fteaFpuDHH3J07b5BiYh8suLU_u1Sw67soOOjzgMIY'
+
+env = environ.Env()
+environ.Env.read_env()  # Loads environment variables from the .env file

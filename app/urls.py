@@ -3,7 +3,6 @@ from . import views
 from .views import password_reset_request, password_reset_confirm, account_view, balance_view, \
     transaction_view, health_check, LoginView, logout_view
 
-
 urlpatterns = [
     path('register/', views.register_user, name='register_user'),
 
@@ -24,6 +23,8 @@ urlpatterns = [
     path('transfer/', views.initiate_transfer, name='transfer'),
     path('transaction/status/<str:transaction_id>/', views.transaction_status, name='transaction_status'),
     path('webhook/<str:provider>/', views.payment_webhook, name='payment_webhook'),
+
+    #path('webhook/transaction/', transaction_webhook, name='transaction_webhook'),
 
     path('status/', health_check, name='health_check'),
 ]

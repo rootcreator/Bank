@@ -2,6 +2,7 @@ import uuid
 from django.db import models
 from django_countries.fields import CountryField
 from django.contrib.auth.models import AbstractUser
+from decimal import Decimal
 
 TRANSACTION_TYPES = (
     ('deposit', 'Deposit'),
@@ -90,7 +91,7 @@ class USDAccount(models.Model):
         return Transaction.objects.filter(user=self.user).order_by('-created_at')
 
     def __str__(self):
-        return f"{self.user.username} - Balance: ${self.balance}"
+        return f"{self.user} - Balance: ${self.balance}"
 
 
 class Fee(models.Model):
@@ -103,12 +104,16 @@ class Fee(models.Model):
         return f"{self.transaction_type.capitalize()} Fee"
 
     def calculate_fee(self, amount):
-        percentage_cost = (self.percentage_fee / 100) * amount
+        # Ensure the amount is a Decimal
+        amount = Decimal(amount)
+        percentage_cost = (self.percentage_fee / Decimal(100)) * amount
         total_fee = self.flat_fee + percentage_cost
         return total_fee
 
     @classmethod
     def apply_transaction_fee(cls, transaction_type, amount):
+        # Ensure the amount is a Decimal
+        amount = Decimal(amount)
         fee = cls.objects.get(transaction_type=transaction_type, is_active=True)
         fee_amount = fee.calculate_fee(amount)
         total_amount = amount + fee_amount
@@ -134,7 +139,7 @@ class Transaction(models.Model):
     description = models.TextField(null=True, blank=True)
 
     def __str__(self):
-        return f"{self.user.username} - {self.transaction_type} - {self.status}"
+        return f"{self.user} - {self.transaction_type} - {self.status}"
 
 
 class TransactionService:

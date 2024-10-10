@@ -15,6 +15,7 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django_countries import countries
 from rest_framework import status
+from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
@@ -22,6 +23,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.views import TokenObtainPairView
+
 from kyc.models import KYCRequest
 from kyc.serializers import KYCRequestSerializer
 from kyc.tasks import async_process_kyc  # Import the Celery task
@@ -352,6 +354,9 @@ def initiate_deposit(request):
 
     if not amount:
         return Response({'error': 'Amount is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Ensure token exists or create one for the user
+    token, created = Token.objects.get_or_create(user=user)
 
     deposit_service = DepositService()
     result = deposit_service.initiate_deposit(user, amount)
