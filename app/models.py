@@ -72,26 +72,33 @@ class USDAccount(models.Model):
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # Store in USD
     created_at = models.DateTimeField(auto_now_add=True)
 
+    def update_balance(self, amount):
+        """
+        Update the balance of the account.
+        Use a positive amount to increase the balance, negative to decrease.
+        """
+        if amount == 0:
+            raise ValidationError("Amount must be non-zero.")
+
+        with transaction.atomic():
+            new_balance = self.balance + amount
+            if new_balance < 0:
+                raise ValidationError("Insufficient balance")
+
+            self.balance = new_balance
+            self.save()
+
     def deposit(self, amount):
         """Credit account with deposit."""
         if amount <= 0:
-            raise ValueError("Deposit amount must be positive.")
-
-        with transaction.atomic():
-            self.balance += amount
-            self.save()
+            raise ValidationError("Deposit amount must be positive.")
+        self.update_balance(amount)
 
     def withdraw(self, amount):
         """Debit account with withdrawal."""
         if amount <= 0:
-            raise ValueError("Withdrawal amount must be positive.")
-
-        with transaction.atomic():
-            if amount > self.balance:
-                raise ValueError("Insufficient balance")
-
-            self.balance -= amount
-            self.save()
+            raise ValidationError("Withdrawal amount must be positive.")
+        self.update_balance(-amount)
 
     def get_transaction_history(self):
         """Retrieve all transactions for the user's account."""
