@@ -1,6 +1,6 @@
 from celery import shared_task
 import logging
-from .models import KYCRequest  # Import at the top for better practice
+from .models import KYCRequest
   # Importing the process function
 
 logger = logging.getLogger(__name__)

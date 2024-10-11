@@ -28,6 +28,8 @@ class FeeAdmin(admin.ModelAdmin):
 
 @admin.register(Transaction)
 class TransactionAdmin(admin.ModelAdmin):
-    list_display = ('user', 'transaction_type', 'amount', 'status', 'created_at')
+    list_display = ('user', 'id', 'transaction_type', 'amount', 'status', 'created_at')
     search_fields = ('user__username', 'transaction_type')
     list_filter = ('transaction_type', 'status', 'created_at')
+
+    pass

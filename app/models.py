@@ -1,8 +1,8 @@
 import uuid
-from django.db import models
 from django_countries.fields import CountryField
 from django.contrib.auth.models import AbstractUser
 from decimal import Decimal
+from django.db import models, transaction
 
 TRANSACTION_TYPES = (
     ('deposit', 'Deposit'),
@@ -44,7 +44,9 @@ class User(AbstractUser):
 
 
 class UserProfile(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    username = models.CharField(max_length=20, unique=True)
+    full_name = models.CharField(max_length=255)
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     phone_number = models.CharField(max_length=15)
     date_of_birth = models.DateField(null=True, blank=True)
@@ -66,25 +68,30 @@ class UserProfile(models.Model):
 
 
 class USDAccount(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="usd_account")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="usd_account")
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # Store in USD
     created_at = models.DateTimeField(auto_now_add=True)
 
     def deposit(self, amount):
-        """Credit account with deposit"""
+        """Credit account with deposit."""
         if amount <= 0:
             raise ValueError("Deposit amount must be positive.")
-        self.balance += amount
-        self.save()
+
+        with transaction.atomic():
+            self.balance += amount
+            self.save()
 
     def withdraw(self, amount):
-        """Debit account with withdrawal"""
+        """Debit account with withdrawal."""
         if amount <= 0:
             raise ValueError("Withdrawal amount must be positive.")
-        if amount > self.balance:
-            raise ValueError("Insufficient balance")
-        self.balance -= amount
-        self.save()
+
+        with transaction.atomic():
+            if amount > self.balance:
+                raise ValueError("Insufficient balance")
+
+            self.balance -= amount
+            self.save()
 
     def get_transaction_history(self):
         """Retrieve all transactions for the user's account."""
@@ -133,6 +140,7 @@ class Transaction(models.Model):
     fee_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     external_transaction_id = models.CharField(max_length=255, blank=True, null=True)
+    internal_transaction_id = models.CharField(max_length=255, blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

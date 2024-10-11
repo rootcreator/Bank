@@ -1,9 +1,9 @@
-﻿Django~=5.0.3
+﻿Django~=3.2.25
 requests~=2.32.3
-djangorestframework~=3.15.2
+djangorestframework~=3.15.1
 transaction~=5.0
 pytesseract~=0.3.13
 pillow~=10.4.0
 deepface~=0.0.93
-drf-yasg~=1.21.7
 celery~=5.4.0
+jwcrypto~=1.5.6

@@ -1,5 +1,5 @@
 from django.test import TestCase
-from .stellar import StellarAnchorService
+from .services.stellar_anchor_service import StellarAnchorService
 from app.models import User
 
 

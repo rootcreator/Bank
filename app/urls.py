@@ -21,10 +21,9 @@ urlpatterns = [
     path('deposit/', views.initiate_deposit, name='deposit'),
     path('withdraw/', views.initiate_withdrawal, name='withdraw'),
     path('transfer/', views.initiate_transfer, name='transfer'),
-    path('transaction/status/<str:transaction_id>/', views.transaction_status, name='transaction_status'),
+    path('txnstatus/status/<str:transaction_id>/', views.transaction_status, name='transaction_status'),
     path('webhook/<str:provider>/', views.payment_webhook, name='payment_webhook'),
 
-    #path('webhook/transaction/', transaction_webhook, name='transaction_webhook'),
 
-    path('status/', health_check, name='health_check'),
+    path('health/', health_check, name='health_check'),
 ]

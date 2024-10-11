@@ -10,6 +10,8 @@ class KYCRequestAdmin(admin.ModelAdmin):
             kwargs["queryset"] = UserProfile.objects.all()
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
+    pass
+
 
 admin.site.register(KYCRequest, KYCRequestAdmin)
 

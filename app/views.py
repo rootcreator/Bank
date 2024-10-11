@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
+class InsufficientFundsError(Exception):
+    pass
+
+
 def get_country_code(country_name):
     for code, name in dict(countries).items():
         if name.lower() == country_name.lower():
@@ -114,17 +118,6 @@ def register_user(request):
     except Exception as e:
         logger.error(f"Unexpected error during user registration: {str(e)}")
         return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-def create_kyc_request(profile, user):
-    # Create a new KYCRequest
-    KYCRequest.objects.create(
-        user=profile,  # Use the UserProfile instance
-        full_name=user.get_full_name(),
-        date_of_birth=profile.date_of_birth,
-        address=profile.address,
-        status='pending'
-    )
 
 
 # Helper function for email verification (optional)
@@ -245,6 +238,17 @@ def update_kyc_status(request):
         return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
     except UserProfile.DoesNotExist:
         return Response({"error": "User profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+def create_kyc_request(profile, user):
+    # Create a new KYCRequest
+    KYCRequest.objects.create(
+        user=profile,  # Use the UserProfile instance
+        full_name=user.get_full_name(),
+        date_of_birth=profile.date_of_birth,
+        address=profile.address,
+        status='pending'
+    )
 
 
 class KYCSubmissionView(APIView):
@@ -373,7 +377,7 @@ def initiate_deposit(request):
 
 
 @api_view(['POST'])
-def anchor_callback(request):
+def deposit_callback(request):
     # This endpoint would be called by the anchor
     callback_data = request.data
     deposit_service = DepositService()
@@ -417,19 +421,33 @@ def initiate_transfer(request):
     recipient_username = request.data.get("recipient")
     amount = request.data.get("amount")
 
-    with transaction.atomic():
-        try:
-            recipient = User.objects.get(username=recipient_username)
-        except User.DoesNotExist:
-            return Response({"error": "Recipient not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        amount = float(amount)  # Ensure amount is a float for validation
+    except (ValueError, TypeError):
+        return Response({"error": "Invalid amount."}, status=status.HTTP_400_BAD_REQUEST)
 
-        transfer_service = TransferService()
+    try:
+        recipient = User.objects.get(username=recipient_username)
+    except User.DoesNotExist:
+        return Response({"error": "Recipient not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    transfer_service = TransferService()
+
+    try:
         result = transfer_service.process_internal_transfer(sender, recipient, amount)
 
         if "error" in result:
             return Response({"error": result["error"]}, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response({"message": "Transfer successful"}, status=status.HTTP_200_OK)
+        return Response({"message": "Transfer successful"}, status=status.HTTP_200_OK)
+
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except InsufficientFundsError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.error(f"Unexpected error during transfer: {e}")
+        return Response({"error": "An unexpected error occurred."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # Transaction Status
@@ -466,8 +484,12 @@ def payment_webhook(request, provider):
         # Process the Tempo webhook
         pass
     elif provider == "circle":
-        # Process the Tempo webhook
-        pass
+        data = request.data
+        payment_id = data.get('id')
+        status = data.get('status')
+
+        # Update the transaction status in your database
+
     elif provider == "settle_network":
         # Process the Tempo webhook
         pass
@@ -475,18 +497,8 @@ def payment_webhook(request, provider):
         # Process the Tempo webhook
         pass
 
-    return Response({"message": "Webhook processed successfully."}, status=status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-def circle_webhook(request):
-    data = request.data
-    payment_id = data.get('id')
-    status = data.get('status')
-
-    # Update the transaction status in your database
     try:
-        transaction = Transaction.objects.get(id=payment_id)
+        txn = Transaction.objects.get(id=payment_id)
         transaction.status = status  # Update to 'completed', 'pending', etc.
         transaction.save()
         return Response({"message": "Transaction status updated."}, status=status.HTTP_200_OK)
