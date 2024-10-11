@@ -4,7 +4,7 @@ import uuid
 import transaction
 from django.db import transaction
 from app.models import USDAccount, Transaction
-from app.services.paymentgateway import PaymentGateway, CircleGateway
+from app.services.paymentgateway import PaymentGateway, CircleGateway,LinkioGateway
 from app.services.stellar_anchor_service import StellarAnchorService
 from app.services.utils import calculate_fee, has_sufficient_balance
 
@@ -22,7 +22,7 @@ class UserNotVerifiedError(Exception):
 class DepositService:
     def __init__(self):
         # Initialize the StellarAnchorService with a list of concrete gateway instances
-        gateways = [CircleGateway()]  # Add more gateways if needed
+        gateways = [CircleGateway(), LinkioGateway()]  # Add more gateways if needed
         self.anchor_service = StellarAnchorService(gateways)
 
     def initiate_deposit(self, user, amount):
@@ -82,7 +82,7 @@ class DepositService:
 
 class WithdrawalService:
     def __init__(self):
-        gateways = [CircleGateway()]  # Add more gateways if needed
+        gateways = [CircleGateway(), LinkioGateway()]  # Add more gateways if needed
         self.anchor_service = StellarAnchorService(gateways)
 
     def has_sufficient_balance(self, usd_account, amount):
