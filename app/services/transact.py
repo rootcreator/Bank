@@ -82,52 +82,53 @@ class DepositService:
 
 class WithdrawalService:
     def __init__(self):
-        # Initialize the StellarAnchorService with a list of concrete gateway instances
         gateways = [CircleGateway()]  # Add more gateways if needed
         self.anchor_service = StellarAnchorService(gateways)
+
+    def has_sufficient_balance(self, usd_account, amount):
+        return usd_account.balance >= amount
 
     def initiate_withdrawal(self, user, amount):
         # Step 1: Calculate fees using the Fee model
         total_amount, fee_amount, net_amount = calculate_fee('withdrawal', amount)
 
         try:
-            # Get the user's USDAccount
-            balance = user.usdaccount.balance
-            logger.debug(f"User: {user}, Balance: {balance}")
+            # Get the user's USDAccount (ledger entry)
+            usd_account = USDAccount.objects.select_for_update().get(user=user)
+
+            if not self.has_sufficient_balance(usd_account, total_amount):
+                return {'error': 'Insufficient funds in ledger'}
 
             with transaction.atomic():
-                # Step 2: Initiate withdrawal with anchor
+                # Step 2: Initiate withdrawal with anchor (from pooled account)
                 anchor_response = self.anchor_service.initiate_withdrawal(user, net_amount)
                 if 'error' in anchor_response:
                     return anchor_response
 
-                # Step 3: Create pending transaction record
+                # Step 3: Create pending transaction record and update ledger
                 txn = Transaction.objects.create(
                     user=user,
                     amount=amount,
-                    fee=fee_amount,  # Record the fee
+                    fee=fee_amount,
                     transaction_type='withdrawal',
                     status='pending',
                     external_transaction_id=anchor_response.get('id')
                 )
-
-                # Withdraw the total amount, which will check for sufficient funds
-                USDAccount.withdraw(total_amount)
+                usd_account.withdraw(total_amount)  # Use withdraw method
 
             logger.info(f"Withdrawal initiated for user {user.id}, transaction {txn.id}")
             return {
                 'status': 'initiated',
                 'transaction_id': txn.id,
-                'more_info_url': anchor_response.get('url')  # URL where user completes the withdrawal
+                'more_info_url': anchor_response.get('url')
             }
 
         except USDAccount.DoesNotExist:
-            logger.error(f"User {user.id} USD account not found")
-            return {'error': 'User USD account not found'}
-        except ValueError as ve:
-            # Handle insufficient funds error raised from the withdraw method
-            logger.error(f"Insufficient funds for user {user.id}: {ve}")
-            return {'error': 'Insufficient funds'}
+            logger.error(f"User {user.id} USD account ledger not found")
+            return {'error': 'User USD account ledger not found'}
+        except ValidationError as e:
+            logger.error(f"Validation error during withdrawal for user {user.id}: {str(e)}")
+            return {'error': str(e)}
         except Exception as e:
             logger.error(f"Error during withdrawal initiation: {e}")
             return {'error': 'Internal error'}
@@ -147,7 +148,7 @@ class WithdrawalService:
 
                 elif callback_data['status'] == 'failed':
                     usd_account = USDAccount.objects.select_for_update().get(user=txn.user)
-                    usd_account.deposit(txn.amount)  # Refund
+                    usd_account.deposit(txn.amount + txn.fee)  # Refund to ledger
                     txn.status = 'failed'
                     txn.save()
 
@@ -156,6 +157,9 @@ class WithdrawalService:
         except Transaction.DoesNotExist:
             logger.error(f"Transaction not found for id {callback_data['transaction_id']}")
             return {'error': 'Transaction not found'}
+        except ValidationError as e:
+            logger.error(f"Validation error during withdrawal callback: {str(e)}")
+            return {'error': str(e)}
         except Exception as e:
             logger.error(f"Error processing withdrawal callback: {e}")
             raise
