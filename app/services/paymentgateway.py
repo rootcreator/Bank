@@ -51,6 +51,7 @@ class CircleGateway(PaymentGateway):
         self.anchor_url = settings.CIRCLE_API_URL
         self.api_key = settings.CIRCLE_API_KEY
         self.asset_code = "USDC"
+self.platform_custody_account = settings.PLATFORM_CUSTODY_STELLAR_ACCOUNT  # Add your custody Stellar account here
 
         if not self.anchor_url or not self.api_key:
             raise ValueError("Circle API URL and API Key must be set in settings.")
@@ -140,7 +141,9 @@ class CircleGateway(PaymentGateway):
             return {"error": "Connection error", "details": str(e)}
 
 
-    def make_deposit(self, amount, wire_instructions, stellar_wallet_address):
+
+
+    def make_deposit(self, amount, wire_instructions):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -160,8 +163,8 @@ class CircleGateway(PaymentGateway):
             if response.status_code == 200:
                 response_data = response.json()
                 minted_usdc_amount = response_data.get('amount')  # Adjust this according to your API response structure
-                # Now transfer USDC to the Stellar wallet
-                self.transfer_usdc_to_stellar(minted_usdc_amount, stellar_wallet_address)
+                # Now transfer USDC to the custody Stellar account
+                self.transfer_usdc_to_custody_account(minted_usdc_amount)
                 return response_data
             else:
                 logging.error(f"Error initiating deposit with Circle: {response.text}")
@@ -171,14 +174,14 @@ class CircleGateway(PaymentGateway):
             logging.error(f"Connection error occurred: {str(e)}")
             return {"error": "Connection error", "details": str(e)}
 
-    def transfer_usdc_to_stellar(self, amount, stellar_wallet_address):
-        # Logic to send USDC to Stellar wallet
-        # For example, using Stellar SDK or your existing Stellar service
-        stellar_response = self.stellar_service.transfer_usdc(amount, stellar_wallet_address)
+    def transfer_usdc_to_custody_account(self, amount):
+        # Logic to send USDC to the custody Stellar account
+        # Use Stellar SDK or your existing Stellar service to implement this
+        stellar_response = self.stellar_service.transfer_usdc(amount, self.platform_custody_account)
         if "error" in stellar_response:
-            logging.error(f"Failed to transfer USDC to Stellar wallet: {stellar_response['error']}")
+            logging.error(f"Failed to transfer USDC to custody Stellar account: {stellar_response['error']}")
         else:
-            logging.info(f"Successfully transferred {amount} USDC to Stellar wallet: {stellar_wallet_address}")
+            logging.info(f"Successfully transferred {amount} USDC to custody Stellar account: {self.platform_custody_account}")
    
 
 
