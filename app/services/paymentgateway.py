@@ -139,14 +139,15 @@ class CircleGateway(PaymentGateway):
             logging.error(f"Connection error occurred: {str(e)}")
             return {"error": "Connection error", "details": str(e)}
 
-    def make_deposit(self, amount, wire_instructions):
+
+    def make_deposit(self, amount, wire_instructions, stellar_wallet_address):
         headers = {
-            "Authorization": f"Bearer {self.circle_api_key}",
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         data = {
             "asset_code": self.asset_code,
-            "account": wire_instructions['beneficiaryBank']['accountNumber'],  # Use account number from wire instructions
+            "account": wire_instructions['beneficiaryBank']['accountNumber'],
             "amount": amount
         }
 
@@ -157,7 +158,11 @@ class CircleGateway(PaymentGateway):
             )
 
             if response.status_code == 200:
-                return response.json()
+                response_data = response.json()
+                minted_usdc_amount = response_data.get('amount')  # Adjust this according to your API response structure
+                # Now transfer USDC to the Stellar wallet
+                self.transfer_usdc_to_stellar(minted_usdc_amount, stellar_wallet_address)
+                return response_data
             else:
                 logging.error(f"Error initiating deposit with Circle: {response.text}")
                 return {"error": "Failed to initiate deposit", "details": response.text}
@@ -166,7 +171,19 @@ class CircleGateway(PaymentGateway):
             logging.error(f"Connection error occurred: {str(e)}")
             return {"error": "Connection error", "details": str(e)}
 
-    # Withdraw
+    def transfer_usdc_to_stellar(self, amount, stellar_wallet_address):
+        # Logic to send USDC to Stellar wallet
+        # For example, using Stellar SDK or your existing Stellar service
+        stellar_response = self.stellar_service.transfer_usdc(amount, stellar_wallet_address)
+        if "error" in stellar_response:
+            logging.error(f"Failed to transfer USDC to Stellar wallet: {stellar_response['error']}")
+        else:
+            logging.info(f"Successfully transferred {amount} USDC to Stellar wallet: {stellar_wallet_address}")
+   
+
+
+
+ # Withdraw
 
     def link_bank_account(self, billing_details, bank_address, account_number, routing_number):
         headers = {
@@ -197,6 +214,8 @@ class CircleGateway(PaymentGateway):
         except (Timeout, ConnectionError, requests.RequestException) as e:
             logging.error(f"Error during bank account linking: {str(e)}")
             return {"error": "Request failed", "details": str(e)}
+
+
 
     def initiate_withdrawal(self, amount, bank_account_id):
         headers = {
