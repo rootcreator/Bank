@@ -221,6 +221,33 @@ self.platform_custody_account = settings.PLATFORM_CUSTODY_STELLAR_ACCOUNT  # Add
 
 
     def initiate_withdrawal(self, amount, bank_account_id):
+        # Step 1: Withdraw USDC from the Stellar custody account to Circle
+        stellar_withdrawal_response = self.withdraw_from_stellar(amount)
+        
+        if "error" in stellar_withdrawal_response:
+            return stellar_withdrawal_response  # Return the error if Stellar withdrawal fails
+
+        # Step 2: After USDC is successfully withdrawn from Stellar, initiate the payout to the user's bank account
+        return self.process_circle_payout(amount, bank_account_id)
+        
+
+    def withdraw_from_stellar(self, amount):
+        # Withdraw USDC from the custody Stellar account to Circle
+        destination_address = settings.CIRCLE_USDC_ADDRESS  # Set Circle's USDC address
+        response = self.stellar_service.send_payment(destination=destination_address, amount=amount)
+
+        if 'error' in response:
+            logging.error(f"Error withdrawing from Stellar: {response['error']}")
+            return {"error": "Failed to withdraw from Stellar", "details": response['error']}
+        
+        # If withdrawal is successful, return a success message or relevant data
+        return {"success": True, "amount": amount}
+        
+        except Exception as e:
+            logging.error(f"Error during Stellar withdrawal: {str(e)}")
+            return {"error": "Stellar withdrawal error", "details": str(e)}
+
+    def process_circle_payout(self, amount, bank_account_id):
         headers = {
             "Authorization": f"Bearer {self.circle_api_key}",
             "Content-Type": "application/json"
@@ -235,7 +262,7 @@ self.platform_custody_account = settings.PLATFORM_CUSTODY_STELLAR_ACCOUNT  # Add
                 "currency": "USD",
                 "amount": str(amount)
             },
-            "idempotencyKey": "some-unique-key-here",  # Generate a unique key for idempotency
+            "idempotencyKey": self.generate_idempotency_key(),  # Generate a unique key for idempotency
         }
 
         url = urljoin(self.anchor_url, "/businessAccount/payouts")
@@ -275,6 +302,13 @@ self.platform_custody_account = settings.PLATFORM_CUSTODY_STELLAR_ACCOUNT  # Add
         except (Timeout, ConnectionError, requests.RequestException) as e:
             logging.error(f"Error during status check: {str(e)}")
             return {"error": "Request failed", "details": str(e)}
+
+    @staticmethod
+    def generate_idempotency_key():
+        # Implement logic to generate a unique idempotency key
+        return str(uuid.uuid4())  # Example using UUID
+
+
 
 
 """class LinkioGateway(PaymentGateway):
