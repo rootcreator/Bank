@@ -46,9 +46,6 @@ class DepositService:
         if 'error' in anchor_response:
             return anchor_response
 
-        # Step 2: Convert fiat to Stellar (optional)
-        stellar_amount = convert_fiat_to_stellar(amount)  # Implement conversion logic
-
 
         # Step 3: Create pending transaction record
         txn = Transaction.objects.create(
