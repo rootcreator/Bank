@@ -3,8 +3,11 @@ import uuid
 
 import transaction
 from django.db import transaction
-from app.models import USDAccount, Transaction
-from app.services.paymentgateway import PaymentGateway, CircleGateway,LinkioGateway
+from validators import ValidationError
+
+from app.models import USDAccount, Transaction, PlatformAccount
+from app.services.paymentgateway import PaymentGateway, CircleGateway
+from app.services.reconciliation import ReconciliationService
 from app.services.stellar_anchor_service import StellarAnchorService
 from app.services.utils import calculate_fee, has_sufficient_balance
 
@@ -19,13 +22,21 @@ class UserNotVerifiedError(Exception):
     pass
 
 
+def convert_fiat_to_stellar(amount):
+    pass
+
+
 class DepositService:
     def __init__(self):
         # Initialize the StellarAnchorService with a list of concrete gateway instances
-        gateways = [CircleGateway(), LinkioGateway()]  # Add more gateways if needed
+        gateways = [CircleGateway()]  # Add more gateways if needed
         self.anchor_service = StellarAnchorService(gateways)
 
     def initiate_deposit(self, user, amount):
+
+        if amount <= 0:
+            return {"error": "Deposit amount must greater than zero"}
+
         # Step 1: Calculate fees using the Fee model
         total_amount, fee_amount, net_amount = calculate_fee('deposit', amount)
 
@@ -34,6 +45,10 @@ class DepositService:
 
         if 'error' in anchor_response:
             return anchor_response
+
+        # Step 2: Convert fiat to Stellar (optional)
+        stellar_amount = convert_fiat_to_stellar(amount)  # Implement conversion logic
+
 
         # Step 3: Create pending transaction record
         txn = Transaction.objects.create(
@@ -44,6 +59,19 @@ class DepositService:
             status='pending',
             external_transaction_id=anchor_response.get('id')
         )
+
+        ReconciliationService(stellar_amount)
+
+        # Step 5: Update platform account
+        platform_account = PlatformAccount.objects.first()  # Assuming one platform account
+
+        platform_account.balance += net_amount
+
+        platform_account.save()
+
+        usd_account = USDAccount.objects.get(user=user)
+
+        usd_account.deposit(amount)  # Update virtual balance
 
         return {
             'status': 'initiated',
@@ -60,17 +88,17 @@ class DepositService:
                 )
 
                 if callback_data['status'] == 'completed':
-                    usd_account = USDAccount.objects.select_for_update().get(user=transaction.user)
-                    usd_account.deposit(transaction.amount)
+                    usd_account = USDAccount.objects.select_for_update().get(user=txn.user)
+                    usd_account.deposit(txn.amount)
 
-                    transaction.status = 'completed'
-                    transaction.save()
-                    logger.info(f"Deposit completed for transaction {transaction.id}")
+                    txn.status = 'completed'
+                    txn.save()
+                    logger.info(f"Deposit completed for transaction {txn.id}")
 
                 elif callback_data['status'] == 'failed':
-                    transaction.status = 'failed'
-                    transaction.save()
-                    logger.warning(f"Deposit failed for transaction {transaction.id}")
+                    txn.status = 'failed'
+                    txn.save()
+                    logger.warning(f"Deposit failed for transaction {txn.id}")
 
         except Transaction.DoesNotExist:
             logger.error(f"Transaction not found for id {callback_data['transaction_id']}")
@@ -82,10 +110,11 @@ class DepositService:
 
 class WithdrawalService:
     def __init__(self):
-        gateways = [CircleGateway(), LinkioGateway()]  # Add more gateways if needed
+        gateways = [CircleGateway()]  # Add more gateways if needed
         self.anchor_service = StellarAnchorService(gateways)
 
-    def has_sufficient_balance(self, usd_account, amount):
+    @staticmethod
+    def has_sufficient_balance(usd_account, amount):
         return usd_account.balance >= amount
 
     def initiate_withdrawal(self, user, amount):
@@ -96,6 +125,15 @@ class WithdrawalService:
             # Get the user's USDAccount (ledger entry)
             usd_account = USDAccount.objects.select_for_update().get(user=user)
 
+            usd_account.withdraw(amount)  # Deduct from user's virtual balance
+
+            platform_account = PlatformAccount.objects.first()  # Assuming one platform account
+
+            platform_account.withdraw(amount)  # Update pooled funds
+
+            # Log the USDAccount for debugging
+            logger.debug(f"USDAccount: {usd_account}, Balance: {usd_account.balance}")
+
             if not self.has_sufficient_balance(usd_account, total_amount):
                 return {'error': 'Insufficient funds in ledger'}
 
@@ -105,7 +143,13 @@ class WithdrawalService:
                 if 'error' in anchor_response:
                     return anchor_response
 
-                # Step 3: Create pending transaction record and update ledger
+                # Step 3: Convert fiat to Stellar (if necessary for accounting)
+                stellar_amount = convert_fiat_to_stellar(amount)  # Implement conversion logic if needed
+
+                # Step 3: Update platform custody account (optional step, if you track custody balance)
+                ReconciliationService(stellar_amount)
+
+                # Step 4: Create pending transaction record and update ledger
                 txn = Transaction.objects.create(
                     user=user,
                     amount=amount,
@@ -168,7 +212,7 @@ class WithdrawalService:
 class TransferService:
     def process_internal_transfer(self, sender, recipient, amount):
         #if not sender.is_kyc_completed():
-            #raise ValueError('User not KYC verified')
+        #raise ValueError('User not KYC verified')
 
         if amount <= 0:
             raise ValueError('Transfer amount must be greater than zero')
@@ -192,8 +236,10 @@ class TransferService:
                 recipient_account.deposit(net_amount)
 
                 # Step 3: Create transaction records for both sender and recipient
-                self._create_transaction(sender, 'transfer', total_amount, f"Transfer to {recipient.username}", internal_transaction_id)
-                self._create_transaction(recipient, 'transfer', net_amount, f"Transfer from {sender.username}", internal_transaction_id)
+                self._create_transaction(sender, 'transfer', total_amount, f"Transfer to {recipient.username}",
+                                         internal_transaction_id)
+                self._create_transaction(recipient, 'transfer', net_amount, f"Transfer from {sender.username}",
+                                         internal_transaction_id)
 
             logger.info(f"Transfer successful from {sender.username} to {recipient.username}")
             return {'status': 'success'}
@@ -217,4 +263,3 @@ class TransferService:
             description=description,
             internal_transaction_id=internal_transaction_id.get('id')  # Use the same ID for both transactions
         )
-

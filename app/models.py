@@ -1,10 +1,12 @@
+import random
 import uuid
 from django_countries.fields import CountryField
 from django.contrib.auth.models import AbstractUser
 from decimal import Decimal
-from django.db import models, transaction, Sum
-from django.core.mail import send_mail
+from django.db import models, transaction
 import logging
+
+from rest_framework.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 TRANSACTION_TYPES = (
@@ -71,9 +73,25 @@ class UserProfile(models.Model):
 
 
 class USDAccount(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="usd_account")
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    account_id = models.CharField(max_length=6, unique=True, editable=False)
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)  # Store in USD
     created_at = models.DateTimeField(auto_now_add=True)
+
+    @staticmethod
+    def generate_unique_account_id():
+        while True:
+            # Generate a random 6-digit number
+            account_id = str(random.randint(100000, 999999))
+            # Check if it is unique
+            if not USDAccount.objects.filter(account_id=account_id).exists():
+                return account_id
+
+    def save(self, *args, **kwargs):
+        # Generate account_id only if it's not already set (i.e., on creation)
+        if not self.account_id:
+            self.account_id = self.generate_unique_account_id()
+        super().save(*args, **kwargs)
 
     def update_balance(self, amount):
         """
@@ -98,10 +116,11 @@ class USDAccount(models.Model):
         self.update_balance(amount)
 
     def withdraw(self, amount):
-        """Debit account with withdrawal."""
-        if amount <= 0:
-            raise ValidationError("Withdrawal amount must be positive.")
-        self.update_balance(-amount)
+        if self.balance >= amount:
+            self.balance -= amount
+            self.save()
+        else:
+            raise ValidationError("Insufficient funds")
 
     def get_transaction_history(self):
         """Retrieve all transactions for the user's account."""
@@ -200,9 +219,26 @@ class TransactionService:
         return transaction
 
 
+class PlatformAccount(models.Model):
+    name = models.CharField(max_length=20, unique=True)
+    balance = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+    unique_id = models.UUIDField(default=uuid.uuid4, editable=True, unique=True)
 
+    def __str__(self):
+        return self.name  # No parentheses
 
+    def deposit(self, amount):
+        """Deposit funds to the platform account"""
+        if amount <= 0:
+            raise ValidationError("Deposit amount must be positive")
+        self.balance += amount
+        self.save()
 
-
-
-
+    def withdraw(self, amount):
+        """Withdraw funds from the platform account"""
+        if amount <= 0:
+            raise ValidationError("Withdrawal amount must be positive")
+        if amount > self.balance:
+            raise ValidationError("Insufficient funds in platform account")
+        self.balance -= amount
+        self.save()

@@ -1,9 +1,14 @@
 from django.contrib import admin
-from .models import UserProfile, Transaction, USDAccount, Fee, Region
+from .models import UserProfile, Transaction, USDAccount, Fee, Region, PlatformAccount
 
 
 @admin.register(Region)
 class RegionAdmin(admin.ModelAdmin):
+    pass
+
+
+@admin.register(PlatformAccount)
+class PlatformAccountAdmin(admin.ModelAdmin):
     pass
 
 

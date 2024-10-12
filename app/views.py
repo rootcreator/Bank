@@ -1,3 +1,4 @@
+import decimal
 import logging
 from email.message import EmailMessage
 
@@ -390,17 +391,39 @@ def deposit_callback(request):
 @permission_classes([IsAuthenticated])
 def initiate_withdrawal(request):
     user = request.user
-    amount = request.data.get('amount')
+    amount_str = request.data.get('amount')  # Get amount as a string
 
-    if not amount:
+    # Log the received amount for debugging
+    print(f"Amount received: {amount_str}")
+
+    # Check if amount is provided
+    if not amount_str:
         return Response({'error': 'Amount is required'}, status=status.HTTP_400_BAD_REQUEST)
 
+    try:
+        # Convert the amount to a decimal
+        amount = decimal.Decimal(amount_str)
+
+        # Ensure that the amount is positive and valid
+        if amount <= 0:
+            return Response({'error': 'Amount must be a positive number.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    except (TypeError, ValueError, decimal.InvalidOperation):
+        return Response({'error': 'Invalid amount. Must be a decimal number.'}, status=status.HTTP_400_BAD_REQUEST)
+
     withdrawal_service = WithdrawalService()
+
+    # Debug the amount before fee calculation
+    print(f"Initiating withdrawal for user {user.id} with amount: {amount}")
+
+    # Call the withdrawal service
     result = withdrawal_service.initiate_withdrawal(user, amount)
 
+    # Check if an error occurred during withdrawal
     if 'error' in result:
         return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
+    # Return the successful result
     return Response(result, status=status.HTTP_200_OK)
 
 
