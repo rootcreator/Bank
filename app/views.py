@@ -351,7 +351,7 @@ def transaction_view(request):
 
 
 # Deposit
-@api_view(['POST'])
+@api_view(['POST', 'GET'])
 @permission_classes([IsAuthenticated])
 def initiate_deposit(request):
     user = request.user

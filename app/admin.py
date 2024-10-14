@@ -9,7 +9,9 @@ class RegionAdmin(admin.ModelAdmin):
 
 @admin.register(PlatformAccount)
 class PlatformAccountAdmin(admin.ModelAdmin):
-    pass
+    list_display = ('name', 'balance', 'unique_id')
+    search_fields = ('user__username',)
+    list_filter = ('name', 'balance')
 
 
 @admin.register(UserProfile)

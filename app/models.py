@@ -203,7 +203,7 @@ class TransactionService:
             pass
 
         # Record the transaction in the history
-        transaction = Transaction.objects.create(
+        txn = Transaction.objects.create(
             user=user,
             transaction_type=transaction_type,
             amount=amount,
@@ -213,16 +213,20 @@ class TransactionService:
         )
 
         # Set transaction status to completed if all steps succeed
-        transaction.status = 'completed'
-        transaction.save()
+        txn.status = 'completed'
+        txn.save()
 
-        return transaction
+        return txn
+
+
+def generate_unique_id():
+    return str(uuid.uuid4())[:6]
 
 
 class PlatformAccount(models.Model):
     name = models.CharField(max_length=20, unique=True)
     balance = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-    unique_id = models.UUIDField(default=uuid.uuid4, editable=True, unique=True)
+    unique_id = models.CharField(max_length=6, default=generate_unique_id, editable=False, unique=True)
 
     def __str__(self):
         return self.name  # No parentheses

@@ -1,21 +1,24 @@
+import json
 import uuid  # For generating unique idempotency keys
-
 import logging
 import requests
 from abc import ABC, abstractmethod
 from urllib.parse import urljoin
 from requests import Timeout
 from django.conf import settings
+from decimal import Decimal
+
+from app.services.utils import handle_request
 from app.supported_countries import SUPPORTED_COUNTRIES
 
 
 class PaymentGateway(ABC):
     @abstractmethod
-    def initiate_deposit(self, amount, account, country):
+    def initiate_deposit(self, amount, account_details, country):
         pass
 
     @abstractmethod
-    def initiate_withdrawal(self, amount, account, country):
+    def initiate_withdrawal(self, amount, bank_account_id):
         pass
 
     @abstractmethod
@@ -24,34 +27,80 @@ class PaymentGateway(ABC):
         pass
 
     def link_bank_account(self, account_details):
-        headers = {
+        """Link the bank account to initiate deposit or withdrawal"""
+        headers = self._build_headers()
+        data = self._build_bank_account_data(account_details)
+
+        return self._send_post_request("businessAccount/banks/wires", headers, data)
+
+    def _build_headers(self):
+        return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        data = {
-            # build data as per subclass specifics
+
+    def _build_bank_account_data(self, account_details):
+        # Ensure account_details is a dictionary (deserialize if it's a JSON string)
+        if isinstance(account_details, str):
+            try:
+                account_details = json.loads(account_details)
+            except json.JSONDecodeError:
+                return {"error": "Invalid account details format"}
+
+        # Safely extract data using .get() to avoid KeyError
+        return {
+            "billingDetails": {
+                "name": account_details.get('name', 'Unknown'),  # Default to 'Unknown' if key is missing
+                "city": account_details.get('city', 'Unknown'),
+                "country": account_details.get('country', 'Unknown'),
+                "line1": account_details.get('address', 'Unknown'),
+                "district": account_details.get('district', 'Unknown'),
+                "postalCode": account_details.get('postalCode', 'Unknown')
+            },
+            "bankAddress": {
+                "bankName": account_details.get('bankName', 'Unknown'),
+                "city": account_details.get('bankCity', 'Unknown'),
+                "country": account_details.get('bankCountry', 'Unknown'),
+                "line1": account_details.get('bankAddress', 'Unknown'),
+                "district": account_details.get('bankDistrict', 'Unknown')
+            },
+            "idempotencyKey": self.generate_idempotency_key(),
+            "accountNumber": account_details.get('accountNumber', 'Unknown'),
+            "routingNumber": account_details.get('routingNumber', 'Unknown')
         }
-        return self._send_post_request("/businessAccount/banks/wires", headers, data)
+
+    def generate_idempotency_key(self):
+        # Placeholder function for generating idempotency key
+        import uuid
+        return str(uuid.uuid4())
 
     def _send_post_request(self, endpoint, headers, data):
         try:
             response = requests.post(urljoin(self.anchor_url, endpoint), headers=headers, json=data, timeout=10)
-            response.raise_for_status()  # Raises HTTPError for bad responses
+            response.raise_for_status()
             return response.json()
-        except (Timeout, ConnectionError) as e:
-            logging.error(f"Connection error occurred: {str(e)}")
-            return {"error": "Connection error", "details": str(e)}
+        except Timeout:
+            logging.error(f"Request timed out while contacting {endpoint}")
+            return {"error": "Request timed out"}
         except requests.HTTPError as e:
-            logging.error(f"HTTP error occurred: {str(e)}")
+            logging.error(f"HTTP error while contacting {endpoint}: {str(e)}")
             return {"error": "HTTP error", "details": str(e)}
+        except (ConnectionError, requests.RequestException) as e:
+            logging.error(f"Connection error while contacting {endpoint}: {str(e)}")
+            return {"error": "Connection error", "details": str(e)}
+
+    @staticmethod
+    def generate_idempotency_key():
+        """Generate a unique idempotency key"""
+        return str(uuid.uuid4())
 
 
 class CircleGateway(PaymentGateway):
     def __init__(self):
         self.anchor_url = settings.CIRCLE_API_URL
-        self.api_key = settings.CIRCLE_API_KEY
+        self.api_key = "SAND_API_KEY:9039b240f6607d4c7d1d255a6f13ab55:21f9777ee2679146da8725287dd90f9e"
         self.asset_code = "USDC"
-self.platform_custody_account = settings.PLATFORM_CUSTODY_STELLAR_ACCOUNT  # Add your custody Stellar account here
+        self.platform_custody_account = settings.PLATFORM_CUSTODY_STELLAR_ACCOUNT
 
         if not self.anchor_url or not self.api_key:
             raise ValueError("Circle API URL and API Key must be set in settings.")
@@ -59,256 +108,114 @@ self.platform_custody_account = settings.PLATFORM_CUSTODY_STELLAR_ACCOUNT  # Add
     def supports_country(self, country):
         return country in SUPPORTED_COUNTRIES
 
+    def _build_headers(self):
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
     def initiate_deposit(self, amount, account_details, country):
         if not self.supports_country(country):
             return {"error": "Country not supported for deposits."}
+
+        amount = Decimal(amount)
 
         account_response = self.link_bank_account(account_details)
         if "error" in account_response:
             return account_response
 
-        # Step 2: Get wire instructions
         transfer_id = account_response.get("data", {}).get("id")
         wire_instructions_response = self.get_wire_instructions(transfer_id)
         if "error" in wire_instructions_response:
             return wire_instructions_response
 
-        # Step 3: Initiate the deposit
         wire_instructions = wire_instructions_response.get("data")
-        deposit_response = self.make_deposit(amount, wire_instructions)
-        return deposit_response
-
-    def link_bank_account(self, account_details):
-        headers = {
-            "Authorization": f"Bearer {self.circle_api_key}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "billingDetails": {
-                "name": account_details['name'],
-                "city": account_details['city'],
-                "country": account_details['country'],
-                "line1": account_details['address'],
-                "district": account_details['district'],
-                "postalCode": account_details['postalCode']
-            },
-            "bankAddress": {
-                "bankName": account_details['bankName'],
-                "city": account_details['bankCity'],
-                "country": account_details['bankCountry'],
-                "line1": account_details['bankAddress'],
-                "district": account_details['bankDistrict']
-            },
-            "idempotencyKey": "unique-key",  # Generate a unique key here
-            "accountNumber": account_details['accountNumber'],
-            "routingNumber": account_details['routingNumber']
-        }
-
-        try:
-            response = requests.post(
-                urljoin(self.anchor_url, "/v1/businessAccount/banks/wires"),
-                headers=headers, json=data, timeout=10
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logging.error(f"Error linking bank account: {response.text}")
-                return {"error": "Failed to link bank account", "details": response.text}
-
-        except (Timeout, ConnectionError) as e:
-            logging.error(f"Connection error occurred: {str(e)}")
-            return {"error": "Connection error", "details": str(e)}
+        return self.make_deposit(amount, wire_instructions)
 
     def get_wire_instructions(self, transfer_id):
-        headers = {
-            "Authorization": f"Bearer {self.circle_api_key}"
-        }
+        headers = self._build_headers()
+        url = urljoin(self.anchor_url, f"/v1/businessAccount/banks/wires/{transfer_id}/instructions")
+        params = {"currency": "USD"}
+
+        logging.debug(f"Requesting wire instructions from {url} with headers: {headers}")
+        logging.debug(f"Request params: {params}")
+
         try:
-            response = requests.get(
-                urljoin(self.anchor_url, f"/v1/businessAccount/banks/wires/{transfer_id}/instructions?currency=USD"),
-                headers=headers, timeout=10
-            )
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            logging.debug(f"Response status code: {response.status_code}")
+            logging.debug(f"Response content: {response.text}")
 
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logging.error(f"Error retrieving wire instructions: {response.text}")
-                return {"error": "Failed to retrieve wire instructions", "details": response.text}
-
-        except (Timeout, ConnectionError) as e:
-            logging.error(f"Connection error occurred: {str(e)}")
-            return {"error": "Connection error", "details": str(e)}
-
-
-
+            response.raise_for_status()
+            return response.json()
+        except Timeout:
+            logging.error("Request timed out while fetching wire instructions.")
+            return {"error": "Request timed out"}
+        except requests.HTTPError as e:
+            logging.error(f"HTTP error occurred while fetching wire instructions: {str(e)}")
+            logging.error(f"Response content: {e.response.text}")
+            return {"error": "HTTP error", "details": str(e), "response_content": e.response.text}
+        except Exception as e:
+            logging.error(f"Unexpected error occurred while fetching wire instructions: {str(e)}")
+            return {"error": "Unexpected error", "details": str(e)}
 
     def make_deposit(self, amount, wire_instructions):
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        headers = self._build_headers()
         data = {
             "asset_code": self.asset_code,
             "account": wire_instructions['beneficiaryBank']['accountNumber'],
-            "amount": amount
+            "amount": str(amount)
         }
 
-        try:
-            response = requests.post(
-                urljoin(self.anchor_url, "/transactions/deposit/interactive"),
-                headers=headers, json=data, timeout=10
-            )
+        return handle_request(
+            requests.post,
+            urljoin(self.anchor_url, "/transactions/deposit/interactive"),
+            headers=headers,
+            json=data,
+            timeout=10
+        )
 
-            if response.status_code == 200:
-                response_data = response.json()
-                minted_usdc_amount = response_data.get('amount')  # Adjust this according to your API response structure
-                # Now transfer USDC to the custody Stellar account
-                self.transfer_usdc_to_custody_account(minted_usdc_amount)
-                return response_data
-            else:
-                logging.error(f"Error initiating deposit with Circle: {response.text}")
-                return {"error": "Failed to initiate deposit", "details": response.text}
-
-        except (Timeout, ConnectionError) as e:
-            logging.error(f"Connection error occurred: {str(e)}")
-            return {"error": "Connection error", "details": str(e)}
-
-    def transfer_usdc_to_custody_account(self, amount):
-        # Logic to send USDC to the custody Stellar account
-        # Use Stellar SDK or your existing Stellar service to implement this
+    """def transfer_usdc_to_custody_account(self, amount):
+        # Send USDC to custody Stellar account
         stellar_response = self.stellar_service.transfer_usdc(amount, self.platform_custody_account)
         if "error" in stellar_response:
-            logging.error(f"Failed to transfer USDC to custody Stellar account: {stellar_response['error']}")
+            logging.error(f"Failed to transfer USDC to custody: {stellar_response['error']}")
         else:
-            logging.info(f"Successfully transferred {amount} USDC to custody Stellar account: {self.platform_custody_account}")
-   
+            logging.info(f"Successfully transferred {amount} USDC to custody account: {self.platform_custody_account}")"""
 
-
-
- # Withdraw
-
-    def link_bank_account(self, billing_details, bank_address, account_number, routing_number):
-        headers = {
-            "Authorization": f"Bearer {self.circle_api_key}",
-            "Content-Type": "application/json"
-        }
-
-        data = {
-            "billingDetails": billing_details,
-            "bankAddress": bank_address,
-            "idempotencyKey": "some-unique-key-here",  # Generate a unique key for idempotency
-            "accountNumber": account_number,
-            "routingNumber": routing_number
-        }
-
-        url = urljoin(self.anchor_url, "/businessAccount/banks/wires")
-        logging.info(f"Linking bank account with request data: {data}")
-
-        try:
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logging.error(f"Error linking bank account: {response.status_code} {response.text}")
-                return {"error": "Failed to link bank account", "details": response.text}
-
-        except (Timeout, ConnectionError, requests.RequestException) as e:
-            logging.error(f"Error during bank account linking: {str(e)}")
-            return {"error": "Request failed", "details": str(e)}
-
-
-
+    # Similar improvements for withdrawal
     def initiate_withdrawal(self, amount, bank_account_id):
-        # Step 1: Withdraw USDC from the Stellar custody account to Circle
         stellar_withdrawal_response = self.withdraw_from_stellar(amount)
-        
         if "error" in stellar_withdrawal_response:
-            return stellar_withdrawal_response  # Return the error if Stellar withdrawal fails
-
-        # Step 2: After USDC is successfully withdrawn from Stellar, initiate the payout to the user's bank account
+            return stellar_withdrawal_response
         return self.process_circle_payout(amount, bank_account_id)
-        
 
     def withdraw_from_stellar(self, amount):
-        # Withdraw USDC from the custody Stellar account to Circle
-        destination_address = settings.CIRCLE_USDC_ADDRESS  # Set Circle's USDC address
-        response = self.stellar_service.send_payment(destination=destination_address, amount=amount)
-
-        if 'error' in response:
-            logging.error(f"Error withdrawing from Stellar: {response['error']}")
-            return {"error": "Failed to withdraw from Stellar", "details": response['error']}
-        
-        # If withdrawal is successful, return a success message or relevant data
-        return {"success": True, "amount": amount}
-        
+        destination_address = settings.CIRCLE_USDC_ADDRESS
+        try:
+            response = self.stellar_service.send_payment(destination=destination_address, amount=amount)
+            return response if 'error' not in response else {"error": "Failed Stellar withdrawal",
+                                                             "details": response['error']}
         except Exception as e:
-            logging.error(f"Error during Stellar withdrawal: {str(e)}")
+            logging.error(f"Stellar withdrawal error: {str(e)}")
             return {"error": "Stellar withdrawal error", "details": str(e)}
 
     def process_circle_payout(self, amount, bank_account_id):
-        headers = {
-            "Authorization": f"Bearer {self.circle_api_key}",
-            "Content-Type": "application/json"
-        }
-
+        headers = self._build_headers()
         data = {
-            "destination": {
-                "type": "wire",
-                "id": bank_account_id
-            },
-            "amount": {
-                "currency": "USD",
-                "amount": str(amount)
-            },
-            "idempotencyKey": self.generate_idempotency_key(),  # Generate a unique key for idempotency
+            "destination": {"type": "wire", "id": bank_account_id},
+            "amount": {"currency": "USD", "amount": str(amount)},
+            "idempotencyKey": self.generate_idempotency_key(),
         }
-
-        url = urljoin(self.anchor_url, "/businessAccount/payouts")
-        logging.info(f"Sending withdrawal request to {url} with data: {data}")
-
         try:
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logging.error(f"Error initiating withdrawal: {response.status_code} {response.text}")
-                return {"error": "Failed to initiate withdrawal", "details": response.text}
-
+            response = requests.post(
+                urljoin(self.anchor_url, "/businessAccount/payouts"),
+                headers=headers, json=data, timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
         except (Timeout, ConnectionError, requests.RequestException) as e:
             logging.error(f"Error during withdrawal: {str(e)}")
             return {"error": "Request failed", "details": str(e)}
-
-    def check_withdrawal_status(self, payout_id):
-        headers = {
-            "Authorization": f"Bearer {self.circle_api_key}",
-            "accept": "application/json"
-        }
-
-        url = urljoin(self.anchor_url, f"/businessAccount/payouts/{payout_id}")
-        logging.info(f"Checking withdrawal status for payout ID: {payout_id}")
-
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logging.error(f"Error checking withdrawal status: {response.status_code} {response.text}")
-                return {"error": "Failed to check withdrawal status", "details": response.text}
-
-        except (Timeout, ConnectionError, requests.RequestException) as e:
-            logging.error(f"Error during status check: {str(e)}")
-            return {"error": "Request failed", "details": str(e)}
-
-    @staticmethod
-    def generate_idempotency_key():
-        # Implement logic to generate a unique idempotency key
-        return str(uuid.uuid4())  # Example using UUID
-
-
 
 
 """class LinkioGateway(PaymentGateway):
@@ -394,4 +301,3 @@ self.platform_custody_account = settings.PLATFORM_CUSTODY_STELLAR_ACCOUNT  # Add
         except requests.RequestException as e:
             logging.error(f"Request failed: {str(e)}")
             return {"error": "Request failed", "details": str(e)}"""
-

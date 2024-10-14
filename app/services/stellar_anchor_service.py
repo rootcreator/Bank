@@ -28,10 +28,15 @@ class StellarAnchorService:
         if amount <= 0:
             return {"error": "Deposit amount must be greater than zero."}
 
-        gateway = self.get_gateway_for_country(user.userprofile.country)
+        # Fetch the user's country from their user profile
+        country = user.userprofile.country
+
+        # Get a suitable gateway for the user's country
+        gateway = self.get_gateway_for_country(country)
+
         if gateway:
             account = settings.STELLAR_PLATFORM_PUBLIC_KEY
-            return gateway.initiate_deposit(amount, account)
+            return gateway.initiate_deposit(amount, account, country)
         else:
             return {
                 "error": "No payment gateway available for your country.",

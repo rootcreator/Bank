@@ -1,11 +1,13 @@
 import logging
 import uuid
+from decimal import Decimal
 
 import transaction
+from django.conf import settings
 from django.db import transaction
 from validators import ValidationError
 
-from app.models import USDAccount, Transaction, PlatformAccount
+from app.models import USDAccount, Transaction, PlatformAccount, Fee
 from app.services.paymentgateway import PaymentGateway, CircleGateway
 from app.services.reconciliation import ReconciliationService
 from app.services.stellar_anchor_service import StellarAnchorService
@@ -40,12 +42,14 @@ class DepositService:
         # Step 1: Calculate fees using the Fee model
         total_amount, fee_amount, net_amount = calculate_fee('deposit', amount)
 
+        platform_account = PlatformAccount.objects.get(name='Commission')
+        platform_account.deposit(fee_amount)
+
         # Step 2: Initiate deposit with anchor
         anchor_response = self.anchor_service.initiate_deposit(user, net_amount)
 
         if 'error' in anchor_response:
             return anchor_response
-
 
         # Step 3: Create pending transaction record
         txn = Transaction.objects.create(
@@ -57,10 +61,10 @@ class DepositService:
             external_transaction_id=anchor_response.get('id')
         )
 
-        ReconciliationService(stellar_amount)
+        ReconciliationService(net_amount)
 
         # Step 5: Update platform account
-        platform_account = PlatformAccount.objects.first()  # Assuming one platform account
+        platform_account = PlatformAccount.objects.get(name='Pool')
 
         platform_account.balance += net_amount
 
@@ -208,8 +212,8 @@ class WithdrawalService:
 
 class TransferService:
     def process_internal_transfer(self, sender, recipient, amount):
-        #if not sender.is_kyc_completed():
-        #raise ValueError('User not KYC verified')
+        """if not sender.is_kyc_completed():
+            raise ValueError('User not KYC verified')"""
 
         if amount <= 0:
             raise ValueError('Transfer amount must be greater than zero')
@@ -232,11 +236,16 @@ class TransferService:
                 sender_account.withdraw(total_amount)
                 recipient_account.deposit(net_amount)
 
-                # Step 3: Create transaction records for both sender and recipient
+                # Step 3: Fetch the platform account for commissions
+                platform_account = PlatformAccount.objects.get(name='Commission')
+                platform_account.deposit(fee_amount)
+
+                # Step 4: Create transaction records for both sender, recipient, and the fee
                 self._create_transaction(sender, 'transfer', total_amount, f"Transfer to {recipient.username}",
                                          internal_transaction_id)
                 self._create_transaction(recipient, 'transfer', net_amount, f"Transfer from {sender.username}",
                                          internal_transaction_id)
+                self._create_transaction(sender, 'fee', fee_amount, "Transfer fee", internal_transaction_id)
 
             logger.info(f"Transfer successful from {sender.username} to {recipient.username}")
             return {'status': 'success'}
