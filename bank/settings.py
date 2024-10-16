@@ -16,7 +16,9 @@ SECRET_KEY = 'django-insecure-wg8^fa)6f=+i4-^xhb9vkag#ow-q+&pi(tfq_2i&yu4)^k(wiz
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['chicken-aware-nicely.ngrok-free.app',
+                 '127.0.0.1']
+
 
 # Application definition
 
@@ -90,11 +92,12 @@ CSRF_COOKIE_SECURE = False
 
 CORS_ALLOW_ALL_ORIGINS = True
 
-# CORS_ALLOWED_ORIGINS = [
+CORS_ALLOWED_ORIGINS = [
 
-#    "http://127.0.0.1:8000",  # If running Django on a different port
-#    "http://localhost:61459",
-# ]
+    "http://127.0.0.1:8000",  # If running Django on a different port
+    "http://localhost:61459",
+    "https://chicken-aware-nicely.ngrok-free.app"
+]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",  # Allow all ports on localhost
@@ -167,13 +170,11 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'your-email@example.com'
 EMAIL_HOST_PASSWORD = 'your-email-password'
 
-CIRCLE_API_KEY = '69942947473566b7623b7961bfbd5996:4d7135bf215a27897b846c1f24be52a6'
-CIRCLE_API_SECRET = '69942947473566b7623b7961bfbd5996:4d7135bf215a27897b846c1f24be52a6'
-SAND_API_KEY = '9039b240f6607d4c7d1d255a6f13ab55:21f9777ee2679146da8725287dd90f9e'
-CIRCLE_API_URL = 'https://api-sandbox.circle.com/v1/'
+CIRCLE_API = 'SAND_API_KEY:9039b240f6607d4c7d1d255a6f13ab55:21f9777ee2679146da8725287dd90f9e'
+CIRCLE_API_URL = 'https://api-sandbox.circle.com/v1'
+CIRCLE_USDC_ADDRESS = ''
 
 STELLAR_PLATFORM_SECRET = 'SCECAQJKZUNRRBILAFKF5ZPCQZK3M2BIZLUNNMFEJM2KLZ334WRU4ZTC'
-STELLAR_PLATFORM_PUBLIC_KEY = 'GAZX7B22CLDK6FV4FDFHAXZDUXYASO64BCP5YRSTKOUELKGWDJXOEIHG'
 
 PLATFORM_CUSTODY_STELLAR_ACCOUNT = 'GAZX7B22CLDK6FV4FDFHAXZDUXYASO64BCP5YRSTKOUELKGWDJXOEIHG'
 

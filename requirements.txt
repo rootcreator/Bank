@@ -7,3 +7,5 @@ pillow~=10.4.0
 deepface~=0.0.93
 celery~=5.4.0
 jwcrypto~=1.5.6
+
+validators~=0.34.0

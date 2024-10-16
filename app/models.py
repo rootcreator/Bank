@@ -174,6 +174,8 @@ class Transaction(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     description = models.TextField(null=True, blank=True)
+    payment_method = models.CharField(max_length=255)
+    gateway = models.CharField(max_length=255)
 
     def __str__(self):
         return f"{self.user} - {self.transaction_type} - {self.status}"
@@ -246,3 +248,29 @@ class PlatformAccount(models.Model):
             raise ValidationError("Insufficient funds in platform account")
         self.balance -= amount
         self.save()
+
+
+class LinkedAccount(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    bank_account_id = models.CharField(max_length=255)
+    account_number = models.CharField(max_length=20)
+    routing_number = models.CharField(max_length=20)
+    bank_name = models.CharField(max_length=255)
+
+    # Billing address fields
+    billing_name = models.CharField(max_length=255)
+    billing_city = models.CharField(max_length=255)
+    billing_country = models.CharField(max_length=2)  # Use ISO 3166-1 alpha-2 format
+    billing_line1 = models.CharField(max_length=255)
+    billing_district = models.CharField(max_length=255)
+    billing_postal_code = models.CharField(max_length=20)
+
+    # Bank address fields
+    bank_address_line1 = models.CharField(max_length=255)
+    bank_address_city = models.CharField(max_length=255)
+    bank_address_country = models.CharField(max_length=2)  # Use ISO 3166-1 alpha-2 format
+    bank_address_district = models.CharField(max_length=255)
+
+    def __str__(self):
+        return f"{self.bank_name} linked to {self.user.username}"
+

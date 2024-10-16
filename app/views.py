@@ -1,7 +1,11 @@
 import decimal
 import logging
+import uuid
+from decimal import Decimal
 from email.message import EmailMessage
 
+import requests
+from celery import result
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
@@ -25,15 +29,17 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
+from bank.settings import CIRCLE_API_URL, CIRCLE_API
 from kyc.models import KYCRequest
 from kyc.serializers import KYCRequestSerializer
 from kyc.tasks import async_process_kyc  # Import the Celery task
 from . import serializers
-from .models import Transaction, USDAccount
+from .models import Transaction, USDAccount, LinkedAccount
 from .models import UserProfile, Region  # Ensure to import the Region model
 from .serializers import UserSerializer, UserProfileSerializer, USDAccountSerializer, TransactionSerializer
-from .services.stellar_anchor_service import StellarAnchorService
-from .services.transact import DepositService, WithdrawalService, TransferService
+from app.services.transact.transfer import TransferService
+from .services.transact.deposit import DepositService
+from .services.transact.withdraw import WithdrawalService
 
 logger = logging.getLogger(__name__)
 
@@ -351,39 +357,47 @@ def transaction_view(request):
 
 
 # Deposit
-@api_view(['POST', 'GET'])
+@api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def initiate_deposit(request):
     user = request.user
     amount = request.data.get('amount')
+    payment_method = request.data.get('payment_method', 'bank_transfer')
+    gateway_name = request.data.get('gateway_name', 'circle')
 
-    if not amount:
-        return Response({'error': 'Amount is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        if amount is None:
+            raise ValueError("Amount is required.")
 
-    # Ensure token exists or create one for the user
-    token, created = Token.objects.get_or_create(user=user)
+        amount = Decimal(amount)
+        if amount <= 0:
+            raise ValueError("Amount must be greater than zero.")
 
-    deposit_service = DepositService()
-    result = deposit_service.initiate_deposit(user, amount)
+        deposit_service = DepositService(user=user, amount=amount, payment_method=payment_method,
+                                         gateway_name=gateway_name)
+        response, status_code = deposit_service.process()
+        return Response(response, status=status_code)
 
-    if 'error' in result:
-        return Response(result, status=status.HTTP_400_BAD_REQUEST)
-
-    if 'error' in result:
-        logger.error(f"Deposit failed for user {user.id}: {result['error']}")
-        return Response(result, status=status.HTTP_400_BAD_REQUEST)
-    logger.info(f"Deposit initiated for user {user.id}: {result['transaction_id']}")
-
-    return Response(result, status=status.HTTP_200_OK)
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({'error': 'An unexpected error occurred: ' + str(e)},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+# Webhook for deposit confirmation
 @api_view(['POST'])
 def deposit_callback(request):
-    # This endpoint would be called by the anchor
-    callback_data = request.data
-    deposit_service = DepositService()
-    result = deposit_service.process_deposit_callback(callback_data)
-    return Response(result, status=200)
+    deposit_info = request.data
+    ledger_entry = Transaction.objects.get(transaction_type="deposit", status="pending")
+    ledger_entry.status = "completed"
+    ledger_entry.save()
+
+    user_wallet = USDAccount.objects.get(user=ledger_entry.user)
+    user_wallet.balance += ledger_entry.amount
+    user_wallet.save()
+
+    return Response({"message": "Deposit confirmed."}, status=200)
 
 
 # Withdraw
@@ -391,49 +405,27 @@ def deposit_callback(request):
 @permission_classes([IsAuthenticated])
 def initiate_withdrawal(request):
     user = request.user
-    amount_str = request.data.get('amount')  # Get amount as a string
-
-    # Log the received amount for debugging
-    print(f"Amount received: {amount_str}")
-
-    # Check if amount is provided
-    if not amount_str:
-        return Response({'error': 'Amount is required'}, status=status.HTTP_400_BAD_REQUEST)
+    amount = request.data.get('amount')
+    method = request.data.get('method', 'circle')
 
     try:
-        # Convert the amount to a decimal
-        amount = decimal.Decimal(amount_str)
-
-        # Ensure that the amount is positive and valid
-        if amount <= 0:
-            return Response({'error': 'Amount must be a positive number.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    except (TypeError, ValueError, decimal.InvalidOperation):
-        return Response({'error': 'Invalid amount. Must be a decimal number.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    withdrawal_service = WithdrawalService()
-
-    # Debug the amount before fee calculation
-    print(f"Initiating withdrawal for user {user.id} with amount: {amount}")
-
-    # Call the withdrawal service
-    result = withdrawal_service.initiate_withdrawal(user, amount)
-
-    # Check if an error occurred during withdrawal
-    if 'error' in result:
-        return Response(result, status=status.HTTP_400_BAD_REQUEST)
-
-    # Return the successful result
-    return Response(result, status=status.HTTP_200_OK)
+        # Call WithdrawalService to handle the withdrawal logic
+        withdrawal_service = WithdrawalService(user=user, amount=amount, method=method)
+        response, status_code = withdrawal_service.process()
+        return Response(response, status=status_code)
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+# Webhook for withdrawal confirmation
 @api_view(['POST'])
-def withdrawal_callback(request):
-    # This endpoint would be called by the anchor for withdrawal callbacks
-    callback_data = request.data
-    withdrawal_service = WithdrawalService()
-    result = withdrawal_service.process_withdrawal_callback(callback_data)
-    return Response(result, status=200)
+def withdrawal_webhook(request):
+    withdrawal_info = request.data
+    ledger_entry = Transaction.objects.get(transaction_type="withdrawal", status="pending")
+    ledger_entry.status = "completed"
+    ledger_entry.save()
+
+    return Response({"message": "Withdrawal confirmed."}, status=200)
 
 
 # Transfers
@@ -473,7 +465,7 @@ def initiate_transfer(request):
         return Response({"error": "An unexpected error occurred."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# Transaction Status
+"""# Transaction Status
 @api_view(['GET'])
 def transaction_status(request, transaction_id):
     logger.info(f"Checking status for transaction {transaction_id}")
@@ -490,43 +482,7 @@ def transaction_status(request, transaction_id):
 
     return Response({
         "error": "Transaction not found or failed."
-    }, status=status.HTTP_404_NOT_FOUND)
-
-
-# Payment Webhooks
-@api_view(['POST'])
-def payment_webhook(request, provider):
-    # Handle webhook from different providers
-    if provider == "flutterwave":
-        # Process the Flutterwave webhook
-        pass
-    elif provider == "tempo":
-        # Process the Tempo webhook
-        pass
-    elif provider == "moneygram":
-        # Process the Tempo webhook
-        pass
-    elif provider == "circle":
-        data = request.data
-        payment_id = data.get('id')
-        status = data.get('status')
-
-        # Update the transaction status in your database
-
-    elif provider == "settle_network":
-        # Process the Tempo webhook
-        pass
-    elif provider == "alchemy_pay":
-        # Process the Tempo webhook
-        pass
-
-    try:
-        txn = Transaction.objects.get(id=payment_id)
-        transaction.status = status  # Update to 'completed', 'pending', etc.
-        transaction.save()
-        return Response({"message": "Transaction status updated."}, status=status.HTTP_200_OK)
-    except Transaction.DoesNotExist:
-        return Response({"error": "Transaction not found."}, status=status.HTTP_404_NOT_FOUND)
+    }, status=status.HTTP_404_NOT_FOUND)"""
 
 
 # Service Status
@@ -534,3 +490,28 @@ def payment_webhook(request, provider):
 def health_check(request):
     """Check the health of the service."""
     return Response({"status": "healthy"}, status=status.HTTP_200_OK)
+
+
+"""@api_view(['POST'])
+@permission_classes([IsAuthenticated])  # Ensure the user is authenticated
+def deposit_funds(request):
+    # Access the user directly from the request
+    user_id = request.user.id  # Or request.user.username or request.user.email, depending on your User model
+    serializer = PaymentRequestSerializer(data=request.data)
+
+    if serializer.is_valid():
+        amount = serializer.validated_data['amount']
+
+        try:
+            # Attempt to deposit funds to Circle
+            circle_response = deposit_to_circle(user_id, amount)
+
+            # Save deposit record to the database
+            Transaction.objects.create(user_id=user_id, amount=amount)  # Save with user_id
+            return Response({"message": "Deposit successful", "circle_response": circle_response},
+                            status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)"""
