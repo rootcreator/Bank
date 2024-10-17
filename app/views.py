@@ -1,11 +1,7 @@
-import decimal
 import logging
-import uuid
 from decimal import Decimal
 from email.message import EmailMessage
 
-import requests
-from celery import result
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
@@ -16,11 +12,12 @@ from django.core.mail import send_mail
 from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
 from django.template.loader import render_to_string
+from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.views.decorators.csrf import csrf_exempt
 from django_countries import countries
 from rest_framework import status
-from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
@@ -29,15 +26,14 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from bank.settings import CIRCLE_API_URL, CIRCLE_API
+from app.services.transact.transfer import TransferService
 from kyc.models import KYCRequest
 from kyc.serializers import KYCRequestSerializer
 from kyc.tasks import async_process_kyc  # Import the Celery task
 from . import serializers
-from .models import Transaction, USDAccount, LinkedAccount
+from .models import Transaction, USDAccount
 from .models import UserProfile, Region  # Ensure to import the Region model
 from .serializers import UserSerializer, UserProfileSerializer, USDAccountSerializer, TransactionSerializer
-from app.services.transact.transfer import TransferService
 from .services.transact.deposit import DepositService
 from .services.transact.withdraw import WithdrawalService
 
@@ -360,44 +356,96 @@ def transaction_view(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def initiate_deposit(request):
-    user = request.user
-    amount = request.data.get('amount')
-    payment_method = request.data.get('payment_method', 'bank_transfer')
-    gateway_name = request.data.get('gateway_name', 'circle')
-
     try:
-        if amount is None:
-            raise ValueError("Amount is required.")
+        method = request.data.get("method")
+        amount = request.data.get("amount")
 
-        amount = Decimal(amount)
-        if amount <= 0:
-            raise ValueError("Amount must be greater than zero.")
+        if not amount or Decimal(amount) <= 0:
+            return Response({"status": "error", "message": "Invalid deposit amount."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        deposit_service = DepositService(user=user, amount=amount, payment_method=payment_method,
-                                         gateway_name=gateway_name)
-        response, status_code = deposit_service.process()
-        return Response(response, status=status_code)
+        deposit_service = DepositService(request.user)
+
+        if method == "direct_usdc":
+            instructions, deposit_id = deposit_service.initiate_usdc_deposit(amount)
+            return Response({"status": "success", "message": "USDC deposit initiated.", "instructions": instructions,
+                             "deposit_id": deposit_id})
+
+        elif method == "transak":
+
+            fiat_currency = request.data.get("fiat_currency", "USD")  # Default to USD
+
+            payment_method = request.data.get("payment_method")
+
+            # Validate payment method
+
+            if not deposit_service.is_valid_payment_method(payment_method):
+                return Response({
+
+                    "status": "error",
+
+                    "message": "Invalid payment method."
+
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Call the transak deposit service
+
+            usdc_amount = deposit_service.transak_deposit(amount, fiat_currency, payment_method)
+
+            # Handle the deposit result
+
+            if usdc_amount:
+
+                return Response({
+
+                    "status": "success",
+
+                    "message": "Transak deposit successful.",
+
+                    "amount": usdc_amount
+
+                })
+
+            else:
+
+                return Response({
+
+                    "status": "error",
+
+                    "message": "Transak deposit failed."
+
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        elif method == "circle":
+            usdc_amount = deposit_service.circle_bank_transfer(amount)
+            if usdc_amount:
+                return Response(
+                    {"status": "success", "message": "Bank transfer successful.", "amount": usdc_amount})
+            return Response({"status": "error", "message": "Bank transfer failed."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        elif method == "moneygram":
+            reference_id = request.data.get("reference_id")
+            usdc_amount = deposit_service.moneygram_deposit(reference_id)
+            if usdc_amount:
+                return Response(
+                    {"status": "success", "message": "MoneyGram deposit confirmed.", "amount": usdc_amount})
+            return Response({"status": "error", "message": "MoneyGram deposit not found or failed."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"status": "error", "message": "Invalid deposit method."},
+                        status=status.HTTP_400_BAD_REQUEST)
 
     except ValueError as e:
-        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        logger.error(f"ValueError occurred: {str(e)}", exc_info=True)
+        return Response({"status": "error", "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Transaction.DoesNotExist as e:
+        logger.error(f"Transaction does not exist: {str(e)}", exc_info=True)
+        return Response({"status": "error", "message": "Transaction not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return Response({'error': 'An unexpected error occurred: ' + str(e)},
+        logger.error(f"Unexpected error occurred: {str(e)}", exc_info=True)
+        return Response({"status": "error", "message": f"An unexpected error occurred: {str(e)}"},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# Webhook for deposit confirmation
-@api_view(['POST'])
-def deposit_callback(request):
-    deposit_info = request.data
-    ledger_entry = Transaction.objects.get(transaction_type="deposit", status="pending")
-    ledger_entry.status = "completed"
-    ledger_entry.save()
-
-    user_wallet = USDAccount.objects.get(user=ledger_entry.user)
-    user_wallet.balance += ledger_entry.amount
-    user_wallet.save()
-
-    return Response({"message": "Deposit confirmed."}, status=200)
 
 
 # Withdraw

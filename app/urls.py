@@ -1,10 +1,15 @@
 from django.urls import path
+from rest_framework_simplejwt.views import TokenRefreshView, TokenObtainPairView
+
 from . import views
 from .views import password_reset_request, password_reset_confirm, account_view, balance_view, \
-    transaction_view, health_check, LoginView, logout_view, deposit_callback, withdrawal_webhook
+    transaction_view, health_check, LoginView, logout_view, withdrawal_webhook
 
 urlpatterns = [
     path('register/', views.register_user, name='register_user'),
+
+    path('token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
     path('login/', LoginView.as_view(), name='login'),
     path('logout/', logout_view, name='logout'),
@@ -19,7 +24,6 @@ urlpatterns = [
     path('transactions/', transaction_view, name='transaction_view'),
 
     path('deposit/', views.initiate_deposit, name='deposit'),
-    path('webhook/deposit/', deposit_callback, name='deposit_callback'),
     path('withdraw/', views.initiate_withdrawal, name='withdraw'),
     path('webhook/withdrawal/', withdrawal_webhook, name='withdrawal_webhook'),
     path('transfer/', views.initiate_transfer, name='transfer'),

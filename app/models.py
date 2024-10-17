@@ -176,6 +176,7 @@ class Transaction(models.Model):
     description = models.TextField(null=True, blank=True)
     payment_method = models.CharField(max_length=255)
     gateway = models.CharField(max_length=255)
+    memo = models.CharField(max_length=255)
 
     def __str__(self):
         return f"{self.user} - {self.transaction_type} - {self.status}"

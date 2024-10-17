@@ -45,8 +45,8 @@ MIDDLEWARE = [
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -173,6 +173,8 @@ EMAIL_HOST_PASSWORD = 'your-email-password'
 CIRCLE_API = 'SAND_API_KEY:9039b240f6607d4c7d1d255a6f13ab55:21f9777ee2679146da8725287dd90f9e'
 CIRCLE_API_URL = 'https://api-sandbox.circle.com/v1'
 CIRCLE_USDC_ADDRESS = ''
+
+TRANSAK_API_KEY = 'f4d28346-1b4d-43af-bf95-059b601e7f94'
 
 STELLAR_PLATFORM_SECRET = 'SCECAQJKZUNRRBILAFKF5ZPCQZK3M2BIZLUNNMFEJM2KLZ334WRU4ZTC'
 
