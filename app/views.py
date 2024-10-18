@@ -417,12 +417,7 @@ def initiate_deposit(request):
                 }, status=status.HTTP_400_BAD_REQUEST)
 
         elif method == "circle":
-            usdc_amount = deposit_service.circle_bank_transfer(amount)
-            if usdc_amount:
-                return Response(
-                    {"status": "success", "message": "Bank transfer successful.", "amount": usdc_amount})
-            return Response({"status": "error", "message": "Bank transfer failed."},
-                            status=status.HTTP_400_BAD_REQUEST)
+            return deposit_service.circle_bank_transfer(amount)
 
         elif method == "moneygram":
             reference_id = request.data.get("reference_id")

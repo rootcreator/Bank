@@ -5,7 +5,7 @@ import transaction
 from django.db import transaction
 
 from app.models import USDAccount, Transaction, PlatformAccount
-from app.services.utils import calculate_fee, has_sufficient_balance
+from app.services.transact.utils import calculate_fee, has_sufficient_balance
 
 logger = logging.getLogger(__name__)
 

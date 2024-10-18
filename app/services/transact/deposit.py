@@ -1,7 +1,8 @@
 import logging
 from urllib.parse import urlencode
-
+from rest_framework.response import Response
 import requests
+from rest_framework import status
 from rest_framework.utils import timezone
 from stellar_sdk import Server, Asset
 from decimal import Decimal
@@ -9,7 +10,7 @@ from django.conf import settings
 import uuid
 
 from app.models import Transaction, USDAccount, PlatformAccount
-
+from app.services.transact.utils import get_state_code
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,13 @@ class DepositService:
         self.usd_account = USDAccount.objects.get(user=user)
         self.platform_account = PlatformAccount.objects.first()
         self.stellar_server = Server("https://horizon.stellar.org")
+
+        self.api_key = settings.CIRCLE_API
+        self.headers = {
+            'accept': 'application/json',
+            'authorization': f'Bearer {self.api_key}',
+            'content-type': 'application/json'
+        }
 
     def is_valid_payment_method(self, payment_method):
         allowed_payment_methods = [
@@ -205,26 +213,100 @@ class DepositService:
 
     # Circle bank transfer method
     def circle_bank_transfer(self, amount):
-        url = "https://api.circle.com/v1/mint"
-        params = {
-            "amount": amount,
-            "currency": "USD",
-            "apiKey": settings.CIRCLE_API_KEY,
-        }
-        response = requests.post(url, json=params)
-        data = response.json()
-        if data.get("status") == "SUCCESS":
-            usdc_amount = Decimal(data.get("amount"))
-            self.usd_account.credit(usdc_amount)  # Credit the user's virtual balance
-            self.platform_account.credit(usdc_amount)  # Increase the platform balance
-            Transaction.objects.create(
-                user=self.user,
-                amount=usdc_amount,
-                transaction_type='Circle bank transfer',
-                status='completed'
-            )
-            return usdc_amount
-        return None
+        # Step 1: Link the bank account
+        try:
+            bank_account_id = self.link_bank_account()
+            if not bank_account_id:
+                return Response({"status": "error", "message": "Bank account linking failed."},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            # Step 2: Get wire instructions for the bank account
+            wire_instructions = self.get_wire_instructions(bank_account_id)
+            if not wire_instructions:
+                return Response({"status": "error", "message": "Failed to get wire instructions."},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            # Step 3: Notify the user to proceed with the transfer
+            return Response({
+                "status": "success",
+                "message": "Bank account linked successfully. Please use the following wire instructions to transfer funds.",
+                "wire_instructions": wire_instructions
+            })
+        except Exception as e:
+            logger.error(f"Error in bank transfer process: {e}")
+            return Response({"status": "error", "message": "An error occurred during the transfer process."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def link_bank_account(self):
+        try:
+            # Get user's profile information
+            profile = self.user.userprofile  # Access the related UserProfile
+
+            # Convert state name to 2-character code
+            state_code = get_state_code(profile.state)
+
+            url = "https://api-sandbox.circle.com/v1/businessAccount/banks/wires"
+            params = {
+                "billingDetails": {
+                    "name": profile.full_name,
+                    "city": profile.city,
+                    "country": profile.country.code if profile.country else "US",
+                    "line1": profile.address,
+                    "district": state_code,  # The 2-character state code
+                    "postalCode": "00000"  # Placeholder for postal code
+                },
+                "bankAddress": {
+                    "bankName": "WELLS FARGO BANK, NA",
+                    "city": "SAN FRANCISCO",
+                    "country": "US",
+                    "line1": "100 Money Street",
+                    "district": "CA"  # Bank's state
+                },
+                "idempotencyKey": str(uuid.uuid4()),  # Unique key for retries
+                "accountNumber": "12340010",  # Sample account number (replace with actual data)
+                "routingNumber": "121000248"  # Sample routing number (replace with actual data)
+            }
+
+            # Send request to Circle API
+            response = requests.post(url, headers=self.headers, json=params, timeout=30)
+            response.raise_for_status()  # Raise an error for bad responses
+
+            data = response.json()
+            if data.get("data"):
+                return data["data"]["id"]  # Return the bank account ID
+            else:
+                logger.error(f"Unexpected response structure: {data}")
+                return None
+
+        except requests.exceptions.HTTPError as http_err:
+            logger.error(f"HTTP error occurred: {response.text}")
+            return None
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Bank account linking failed: {e}")
+            return None
+        except AttributeError:
+            logger.error("UserProfile not found for the given user.")
+            return None
+
+    def get_wire_instructions(self, bank_account_id):
+        """
+        Step 2: Get wire instructions using the linked bank account ID.
+        """
+        try:
+            url = f"https://api-sandbox.circle.com/v1/businessAccount/banks/wires/{bank_account_id}/instructions?currency=USD"
+            response = requests.get(url, headers=self.headers, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("data"):
+                return data["data"]  # Return the wire instructions details
+            else:
+                logger.error(f"Unexpected response structure: {data}")
+                return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to get wire instructions: {e}")
+            return None
 
     # MoneyGram deposit method
     def moneygram_deposit(self, reference_id):

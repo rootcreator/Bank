@@ -59,6 +59,8 @@ class UserProfile(models.Model):
     selfie = models.FileField(upload_to='kyc_documents/')
     address = models.CharField(max_length=255)
     address_document = models.FileField(upload_to='kyc_documents/')
+    city = models.CharField(max_length=30)
+    state = models.CharField(max_length=30)
     country = CountryField(blank_label='(select country)', null=True, blank=True)
     region = models.ForeignKey(Region, null=True, blank=True, on_delete=models.CASCADE)
     is_kyc_completed = models.BooleanField(default=False)
@@ -177,49 +179,14 @@ class Transaction(models.Model):
     payment_method = models.CharField(max_length=255)
     gateway = models.CharField(max_length=255)
     memo = models.CharField(max_length=255)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    source_account = models.CharField(max_length=255)
+    destination_account = models.CharField(max_length=255)
+    ip_address = models.GenericIPAddressField()
+    geolocation = models.CharField(max_length=255, null=True, blank=True)
 
     def __str__(self):
         return f"{self.user} - {self.transaction_type} - {self.status}"
-
-
-class TransactionService:
-
-    @staticmethod
-    def process_transaction(user, transaction_type, amount, description=None):
-        # Check for valid transaction type
-        if transaction_type not in dict(TRANSACTION_TYPES):
-            raise ValueError("Invalid transaction type.")
-
-        # Retrieve user's USD account
-        account = user.usd_account
-
-        # Apply transaction fees
-        total_amount, fee_amount = Fee.apply_transaction_fee(transaction_type, amount)
-
-        # Perform the transaction (e.g., deposit or withdrawal)
-        if transaction_type == 'deposit':
-            account.deposit(total_amount)
-        elif transaction_type == 'withdrawal':
-            account.withdraw(total_amount)
-        elif transaction_type == 'transfer':
-            # Add your transfer logic here (between users)
-            pass
-
-        # Record the transaction in the history
-        txn = Transaction.objects.create(
-            user=user,
-            transaction_type=transaction_type,
-            amount=amount,
-            fee_amount=fee_amount,
-            status='pending',  # Set status and handle it through business logic
-            description=description
-        )
-
-        # Set transaction status to completed if all steps succeed
-        txn.status = 'completed'
-        txn.save()
-
-        return txn
 
 
 def generate_unique_id():
@@ -275,3 +242,13 @@ class LinkedAccount(models.Model):
     def __str__(self):
         return f"{self.bank_name} linked to {self.user.username}"
 
+
+class Alert(models.Model):
+    transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE)
+    flags = models.JSONField()
+    reviewed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Alert for {self.transaction} with flags {self.flags}"
+        
