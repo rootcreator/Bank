@@ -27,10 +27,9 @@ urlpatterns = [
     path('withdraw/', views.initiate_withdrawal, name='withdraw'),
     path('webhook/withdrawal/', withdrawal_webhook, name='withdrawal_webhook'),
     path('transfer/', views.initiate_transfer, name='transfer'),
-    #path('deposit_funds/', deposit_funds, name='deposit-funds'),
-
-
 
     path('health/', health_check, name='health_check'),
+
+
 
 ]

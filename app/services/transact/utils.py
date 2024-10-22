@@ -1,6 +1,9 @@
+import logging
 from decimal import Decimal
 
 from app.models import Fee, TRANSACTION_TYPES, Transaction
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_fee(transaction_type, amount):
@@ -72,3 +75,8 @@ STATE_CODE_MAPPING = {
 
 def get_state_code(state_name):
     return STATE_CODE_MAPPING.get(state_name, "")  # Return empty if not found
+
+
+
+
+

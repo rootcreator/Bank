@@ -6,6 +6,8 @@ from drf_yasg import openapi
 import app.urls
 import kyc.urls
 import iban.urls
+import utils.urls
+import invest.urls
 
 # Create the schema view using get_schema_view from drf-yasg
 schema_view = get_schema_view(
@@ -26,6 +28,8 @@ urlpatterns = [
     path('api/', include(app.urls)),
     path('kyc/', include(kyc.urls)),
     path('iban/', include(iban.urls)),
+    path('utils/', include(utils.urls)),
+    path('invest/', include(invest.urls)),
 
     # Swagger documentation
     re_path(r'^swagger(?P<format>\.json|\.yaml)$', schema_view.without_ui(cache_timeout=0), name='schema-json'),

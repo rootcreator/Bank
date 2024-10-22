@@ -1,5 +1,7 @@
 import random
 import uuid
+
+from django.core.validators import RegexValidator
 from django_countries.fields import CountryField
 from django.contrib.auth.models import AbstractUser
 from decimal import Decimal
@@ -13,6 +15,7 @@ TRANSACTION_TYPES = (
     ('deposit', 'Deposit'),
     ('withdrawal', 'Withdrawal'),
     ('transfer', 'Transfer'),
+    ('top-up', 'Top-up'),
 )
 
 
@@ -221,8 +224,14 @@ class PlatformAccount(models.Model):
 class LinkedAccount(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     bank_account_id = models.CharField(max_length=255)
-    account_number = models.CharField(max_length=20)
-    routing_number = models.CharField(max_length=20)
+    account_number = models.CharField(
+        max_length=20,
+        validators=[RegexValidator(regex=r'^\d+$', message="Account number must be numeric.")]
+    )
+    routing_number = models.CharField(
+        max_length=20,
+        validators=[RegexValidator(regex=r'^\d+$', message="Account number must be numeric.")]
+    )
     bank_name = models.CharField(max_length=255)
 
     # Billing address fields
@@ -241,6 +250,38 @@ class LinkedAccount(models.Model):
 
     def __str__(self):
         return f"{self.bank_name} linked to {self.user.username}"
+
+
+class Beneficiary(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    email = models.EmailField()
+    account_number = models.CharField(
+        max_length=20,
+        validators=[RegexValidator(regex=r'^\d+$', message="Account number must be numeric.")]
+    )  # Optional
+    routing_number = models.CharField(
+        max_length=20,
+        validators=[RegexValidator(regex=r'^\d+$', message="Account number must be numeric.")]
+    )  # Optional
+    bank_name = models.CharField(max_length=255, blank=True, null=True)  # Optional
+
+    # Billing address fields
+    billing_name = models.CharField(max_length=255)
+    billing_city = models.CharField(max_length=255)
+    billing_country = models.CharField(max_length=2)  # Use ISO 3166-1 alpha-2 format
+    billing_line1 = models.CharField(max_length=255)
+    billing_district = models.CharField(max_length=255)
+    billing_postal_code = models.CharField(max_length=20)
+
+    # Bank address fields
+    bank_address_line1 = models.CharField(max_length=255)
+    bank_address_city = models.CharField(max_length=255)
+    bank_address_country = models.CharField(max_length=2)  # Use ISO 3166-1 alpha-2 format
+    bank_address_district = models.CharField(max_length=255)
+
+    def __str__(self):
+        return f"{self.name} (Beneficiary for {self.user.username})"
 
 
 class Alert(models.Model):

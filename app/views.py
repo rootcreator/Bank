@@ -1,8 +1,7 @@
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
 
-from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
@@ -12,10 +11,8 @@ from django.core.mail import send_mail
 from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
 from django.template.loader import render_to_string
-from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
-from django.views.decorators.csrf import csrf_exempt
 from django_countries import countries
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -26,24 +23,18 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from app.services.transact.transfer import TransferService
+from app.services.transact.transfer import TransferService, InsufficientFundsError
 from kyc.models import KYCRequest
 from kyc.serializers import KYCRequestSerializer
 from kyc.tasks import async_process_kyc  # Import the Celery task
 from . import serializers
-from .models import Transaction, USDAccount
-from .models import UserProfile, Region  # Ensure to import the Region model
+from .models import Transaction, USDAccount, UserProfile, Region
 from .serializers import UserSerializer, UserProfileSerializer, USDAccountSerializer, TransactionSerializer
 from .services.transact.deposit import DepositService
 from .services.transact.withdraw import WithdrawalService
+from .services.transact.withdrawal_utils import validate_stellar_address, validate_address, validate_account_number
 
 logger = logging.getLogger(__name__)
-
-User = get_user_model()
-
-
-class InsufficientFundsError(Exception):
-    pass
 
 
 def get_country_code(country_name):
@@ -254,31 +245,6 @@ def create_kyc_request(profile, user):
     )
 
 
-class KYCSubmissionView(APIView):
-    permission_classes = [IsAuthenticated]  # Ensure the user is authenticated
-
-    def post(self, request):
-        serializer = KYCRequestSerializer(data=request.data)
-
-        if serializer.is_valid():
-            kyc_request = KYCRequest.objects.create(
-                user_profile=request.user.userprofile,
-                document_type=serializer.validated_data['document_type'],
-                id_document=serializer.validated_data['document_file'],
-                address_document=serializer.validated_data['address_proof_file'],
-                selfie=serializer.validated_data['selfie_file'],
-                status='pending'
-            )
-
-            async_process_kyc.delay(kyc_request.id)  # Trigger the Celery task
-
-            logger.info(f"KYC submitted successfully for user {request.user.id}. Task ID: {kyc_request.id}")
-            return Response({"message": "KYC submitted successfully, pending approval."},
-                            status=status.HTTP_201_CREATED)
-
-        return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-
-
 class KYCStatusView(APIView):
     permission_classes = [IsAuthenticated]  # Ensure user is authenticated
 
@@ -293,32 +259,6 @@ class KYCStatusView(APIView):
 
         except KYCRequest.DoesNotExist:
             return Response({"error": "KYC request not found"}, status=status.HTTP_404_NOT_FOUND)
-
-
-def process_kyc_for_user(user_profile):
-    """Processes KYC verification for a given user."""
-    try:
-        # Fetch the KYC request related to the user profile
-        kyc_request = KYCRequest.objects.get(user_profile=user_profile)
-
-        # Call the KYC verification logic (Assuming verify is a method in the KYCRequest model)
-        kyc_status = kyc_request.verify()  # If 'verify' is a static or instance method
-
-        # Update the status in KYCRequest model
-        kyc_request.status = kyc_status
-        kyc_request.save()
-
-        logger.info(f"KYC verification succeeded for user {user_profile.id}. Status: {kyc_status}")
-        return kyc_status
-
-    except KYCRequest.DoesNotExist:
-        logger.error(f"KYC request not found for user {user_profile.id}.")
-        return "KYC request not found"
-
-    except Exception as e:
-        # Log the error and raise an appropriate message
-        logger.error(f"KYC verification failed for user {user_profile.id}: {str(e)}")
-        raise  # Reraise or handle as necessary
 
 
 # Account
@@ -447,17 +387,87 @@ def initiate_deposit(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def initiate_withdrawal(request):
-    user = request.user
+    user = request.user  # Get the user from the request
     amount = request.data.get('amount')
-    method = request.data.get('method', 'circle')
+    method = request.data.get('method', 'circle')  # Default method is 'circle'
+
+    # Define allowed methods
+    allowed_methods = ['circle', 'crypto', 'yellow']
+
+    # Validate method
+    if method not in allowed_methods:
+        logger.error(f'Invalid withdrawal method: {method} by user: {user.id}')
+        return Response({'error': 'Invalid withdrawal method'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Validate amount
+    if isinstance(amount, dict):
+        amount = amount.get('value')  # Extract value if amount is a dict
+
+    if amount is None:
+        logger.error(f'Amount is required for withdrawal by user: {user.id}')
+        return Response({'error': 'Amount is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        amount = Decimal(amount)  # Convert to Decimal
+    except (ValueError, InvalidOperation):
+        logger.error(f'Invalid amount format: {amount} by user: {user.id}')
+        return Response({'error': 'Invalid amount format'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Handle Circle method specific requirements
+    if method == 'circle':
+        destination = request.data.get('destination')  # Fetch the destination
+
+        # Log the request data for debugging
+        logger.debug(f'Request data for user {user.id}: {request.data}')
+
+        if not destination:
+            logger.error(f'Withdrawal destination not specified for Circle withdrawal by user: {user.id}')
+            return Response({'error': 'Withdrawal destination not specified'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if destination is a dictionary
+        if not isinstance(destination, dict):
+            logger.error(
+                f'Invalid destination format for Circle withdrawal by user: {user.id}. Expected a dictionary, got {type(destination).__name__}.')
+            return Response({'error': 'Invalid destination format; it must be an object.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Example validation: Check for 'address' or 'account_number' depending on your requirement
+        if 'account_number' in destination:
+            # Validate account number format if necessary
+            account_number = destination['account_number']
+            if not validate_account_number(account_number):  # Implement your account number validation logic
+                logger.error(f'Invalid account number in destination for Circle withdrawal by user: {user.id}')
+                return Response({'error': 'Invalid account number format.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        else:
+            logger.error(f'Missing required fields in destination for Circle withdrawal by user: {user.id}')
+            return Response({'error': 'Either address or account number must be provided.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+    # If method is 'crypto', validate recipient address
+    recipient_address = request.data.get('recipient_address') if method == 'crypto' else None
+    if method == 'crypto' and not recipient_address:
+        logger.error(f'Recipient address is required for crypto method by user: {user.id}')
+        return Response({'error': 'Recipient address is required for this method.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Validate recipient address only if it's required
+    if recipient_address and not validate_stellar_address(recipient_address):
+        logger.error(f'Invalid recipient address: {recipient_address} by user: {user.id}')
+        return Response({'error': 'Invalid recipient address'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         # Call WithdrawalService to handle the withdrawal logic
-        withdrawal_service = WithdrawalService(user=user, amount=amount, method=method)
+        withdrawal_service = WithdrawalService(user=user, amount=amount, method=method,
+                                               recipient_address=recipient_address,
+                                               destination=destination if method == 'circle' else None)
         response, status_code = withdrawal_service.process()
         return Response(response, status=status_code)
     except ValueError as e:
+        logger.error(f'ValueError during withdrawal processing: {str(e)} by user: {user.id}')
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.exception(f'Unexpected error during withdrawal processing: {str(e)} by user: {user.id}')
+        return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # Webhook for withdrawal confirmation
@@ -508,26 +518,6 @@ def initiate_transfer(request):
         return Response({"error": "An unexpected error occurred."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-"""# Transaction Status
-@api_view(['GET'])
-def transaction_status(request, transaction_id):
-    logger.info(f"Checking status for transaction {transaction_id}")
-
-    # Instantiate the StellarAnchorService
-    anchor_service = StellarAnchorService()
-
-    # Check the transaction status
-    status_response = anchor_service.check_transaction_status(transaction_id)
-
-    # Check if the response contains a valid status
-    if "error" not in status_response:
-        return Response(status_response, status=status.HTTP_200_OK)
-
-    return Response({
-        "error": "Transaction not found or failed."
-    }, status=status.HTTP_404_NOT_FOUND)"""
-
-
 # Service Status
 @api_view(['GET'])
 def health_check(request):
@@ -535,26 +525,5 @@ def health_check(request):
     return Response({"status": "healthy"}, status=status.HTTP_200_OK)
 
 
-"""@api_view(['POST'])
-@permission_classes([IsAuthenticated])  # Ensure the user is authenticated
-def deposit_funds(request):
-    # Access the user directly from the request
-    user_id = request.user.id  # Or request.user.username or request.user.email, depending on your User model
-    serializer = PaymentRequestSerializer(data=request.data)
 
-    if serializer.is_valid():
-        amount = serializer.validated_data['amount']
 
-        try:
-            # Attempt to deposit funds to Circle
-            circle_response = deposit_to_circle(user_id, amount)
-
-            # Save deposit record to the database
-            Transaction.objects.create(user_id=user_id, amount=amount)  # Save with user_id
-            return Response({"message": "Deposit successful", "circle_response": circle_response},
-                            status=status.HTTP_201_CREATED)
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)"""

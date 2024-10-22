@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import UserProfile, Transaction, USDAccount, Fee, Region, PlatformAccount
+from .models import UserProfile, Transaction, USDAccount, Fee, Region, PlatformAccount, Beneficiary, LinkedAccount
 
 
 @admin.register(Region)
@@ -39,4 +39,14 @@ class TransactionAdmin(admin.ModelAdmin):
     search_fields = ('user__username', 'transaction_type')
     list_filter = ('transaction_type', 'status', 'created_at')
 
+    pass
+
+
+@admin.register(LinkedAccount)
+class LinkedAccountAdmin(admin.ModelAdmin):
+    pass
+
+
+@admin.register(Beneficiary)
+class BeneficiaryAdmin(admin.ModelAdmin):
     pass

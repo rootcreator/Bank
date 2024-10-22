@@ -2,6 +2,9 @@ from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.db import transaction
 import logging
+
+from rest_framework.decorators import api_view
+
 from .models import KYCRequest
 from app.models import UserProfile
 from .services import (
@@ -15,6 +18,7 @@ from .services import (
 logger = logging.getLogger(__name__)
 
 
+@api_view(['GET'])
 def submit_kyc(request):
     from .tasks import async_process_kyc
     if request.method == 'POST':

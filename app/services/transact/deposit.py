@@ -29,7 +29,8 @@ class DepositService:
             'content-type': 'application/json'
         }
 
-    def is_valid_payment_method(self, payment_method):
+    @staticmethod
+    def is_valid_payment_method(payment_method):
         allowed_payment_methods = [
             "sepa", "Faster Payment Bank Transfer", "Open Banking", "maya", "bpi",
             "grabpay", "shopeepay", "gcash", "pix", "astropay",

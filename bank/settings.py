@@ -38,6 +38,8 @@ INSTALLED_APPS = [
     'app',
     'kyc',
     'iban',
+    'utils',
+    'invest',
 ]
 
 MIDDLEWARE = [
@@ -171,8 +173,8 @@ EMAIL_HOST_USER = 'your-email@example.com'
 EMAIL_HOST_PASSWORD = 'your-email-password'
 
 CIRCLE_API = 'SAND_API_KEY:9039b240f6607d4c7d1d255a6f13ab55:21f9777ee2679146da8725287dd90f9e'
-CIRCLE_API_URL = 'https://api-sandbox.circle.com/v1'
-CIRCLE_USDC_ADDRESS = ''
+
+CHANGELLY_API_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz888aaCE2Kwtz94m0INmp9ZhO0PkBXvQGwvBO3+HZTvWdFkDHfClcD7BVtCfn11qqj624mB/PYagJmhXHjaTRppjMxEYw9wE0K9rdTdiLk9fobc/8w3dMFv6zhNfCwy2M6x61UVmYEpgshfnrQ3eKJPOTClIcnc5BMRUKjxeF6DOU1Ys4fnET1cgOOFG0jP/pP6tPUCNupKjokEWfZB8UZuP8yH5CwwSJhVEugRQMqPLzDar29lgpcKQSPfHm+xMr7o/ZrpQ2WfMRClGyxv3Cv3Jh/tBZJ63phsMPxB9bqYUj4rj+p/iSsgd2Rqnii5AevHby3b+vxXWjl0Of09IvQIDAQAB'
 
 TRANSAK_API_KEY = 'f4d28346-1b4d-43af-bf95-059b601e7f94'
 
