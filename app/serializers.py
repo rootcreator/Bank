@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
-from .models import UserProfile, Transaction, USDAccount, Fee, Region
+from .models import UserProfile, Transaction, USDAccount, Fee, Region, LinkedAccount
 
 User = get_user_model()
 
@@ -49,3 +49,8 @@ class FeeSerializer(serializers.ModelSerializer):
         model = Fee
         fields = ['transaction_type', 'flat_fee', 'percentage_fee']
 
+
+class LinkedAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LinkedAccount
+        fields = '__all__'

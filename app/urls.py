@@ -3,7 +3,7 @@ from rest_framework_simplejwt.views import TokenRefreshView, TokenObtainPairView
 
 from . import views
 from .views import password_reset_request, password_reset_confirm, account_view, balance_view, \
-    transaction_view, health_check, LoginView, logout_view, withdrawal_webhook
+    transaction_view, health_check, LoginView, logout_view, withdrawal_webhook, LinkedAccountView
 
 urlpatterns = [
     path('register/', views.register_user, name='register_user'),
@@ -30,6 +30,7 @@ urlpatterns = [
 
     path('health/', health_check, name='health_check'),
 
-
+    path('linked-accounts/', LinkedAccountView.as_view()),  # For POST requests (linking account)
+    path('linked-accounts/<int:pk>/', LinkedAccountView.as_view()),  # For GET requests (fetching Circle ID)
 
 ]

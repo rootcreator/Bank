@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import UserProfile, Transaction, USDAccount, Fee, Region, PlatformAccount, Beneficiary, LinkedAccount
+from .models import UserProfile, Transaction, USDAccount, Fee, Region, PlatformAccount, LinkedAccount
 
 
 @admin.register(Region)
@@ -47,6 +47,4 @@ class LinkedAccountAdmin(admin.ModelAdmin):
     pass
 
 
-@admin.register(Beneficiary)
-class BeneficiaryAdmin(admin.ModelAdmin):
-    pass
+

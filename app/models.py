@@ -1,6 +1,8 @@
 import random
 import uuid
 
+import requests
+from django.conf import settings
 from django.core.validators import RegexValidator
 from django_countries.fields import CountryField
 from django.contrib.auth.models import AbstractUser
@@ -223,65 +225,141 @@ class PlatformAccount(models.Model):
 
 class LinkedAccount(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    bank_account_id = models.CharField(max_length=255)
+    bank_account_id = models.CharField(max_length=255, unique=True, blank=True, null=True)
     account_number = models.CharField(
         max_length=20,
         validators=[RegexValidator(regex=r'^\d+$', message="Account number must be numeric.")]
     )
     routing_number = models.CharField(
-        max_length=20,
-        validators=[RegexValidator(regex=r'^\d+$', message="Account number must be numeric.")]
+        max_length=9,
+        validators=[RegexValidator(regex=r'^\d{9}$', message="Routing number must be exactly 9 digits.")]
     )
     bank_name = models.CharField(max_length=255)
+    default = models.BooleanField(default=False)
 
-    # Billing address fields
     billing_name = models.CharField(max_length=255)
     billing_city = models.CharField(max_length=255)
-    billing_country = models.CharField(max_length=2)  # Use ISO 3166-1 alpha-2 format
+    billing_country = models.CharField(max_length=2)
     billing_line1 = models.CharField(max_length=255)
     billing_district = models.CharField(max_length=255)
     billing_postal_code = models.CharField(max_length=20)
 
-    # Bank address fields
     bank_address_line1 = models.CharField(max_length=255)
     bank_address_city = models.CharField(max_length=255)
-    bank_address_country = models.CharField(max_length=2)  # Use ISO 3166-1 alpha-2 format
+    bank_address_country = models.CharField(max_length=2)
     bank_address_district = models.CharField(max_length=255)
+
+    class Meta:
+        unique_together = ('user', 'account_number')
 
     def __str__(self):
         return f"{self.bank_name} linked to {self.user.username}"
 
+    def link_account_to_circle(self):
+        """
+        Link this bank account to Circle's system and store the Circle `bank_account_id`.
+        """
+        url = "https://api-sandbox.circle.com/v1/businessAccount/banks/wires"
+        headers = {
+            "Authorization": f"Bearer {settings.CIRCLE_API}",
+            "Content-Type": "application/json"
+        }
 
-class Beneficiary(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    name = models.CharField(max_length=255)
-    email = models.EmailField()
-    account_number = models.CharField(
-        max_length=20,
-        validators=[RegexValidator(regex=r'^\d+$', message="Account number must be numeric.")]
-    )  # Optional
-    routing_number = models.CharField(
-        max_length=20,
-        validators=[RegexValidator(regex=r'^\d+$', message="Account number must be numeric.")]
-    )  # Optional
-    bank_name = models.CharField(max_length=255, blank=True, null=True)  # Optional
+        # Generate a unique idempotency key
+        idempotency_key = str(uuid.uuid4())
+        payload = {
+            "idempotencyKey": idempotency_key,
+            "billingDetails": {
+                "name": self.billing_name,
+                "city": self.billing_city,
+                "country": self.billing_country,
+                "line1": self.billing_line1,
+                "district": self.billing_district,
+                "postalCode": self.billing_postal_code,
+            },
+            "bankAddress": {
+                "line1": self.bank_address_line1,
+                "city": self.bank_address_city,
+                "country": self.bank_address_country,
+                "district": self.bank_address_district,
+            },
+            "accountNumber": self.account_number,
+            "routingNumber": self.routing_number,
+            "bankName": self.bank_name,
+        }
 
-    # Billing address fields
-    billing_name = models.CharField(max_length=255)
-    billing_city = models.CharField(max_length=255)
-    billing_country = models.CharField(max_length=2)  # Use ISO 3166-1 alpha-2 format
-    billing_line1 = models.CharField(max_length=255)
-    billing_district = models.CharField(max_length=255)
-    billing_postal_code = models.CharField(max_length=20)
+        try:
+            # Send the POST request to Circle's API
+            response = requests.post(url, headers=headers, json=payload)
+            response_data = response.json()
 
-    # Bank address fields
-    bank_address_line1 = models.CharField(max_length=255)
-    bank_address_city = models.CharField(max_length=255)
-    bank_address_country = models.CharField(max_length=2)  # Use ISO 3166-1 alpha-2 format
-    bank_address_district = models.CharField(max_length=255)
+            # Log the status code and response data for debugging
+            print(f"Response Status Code: {response.status_code}")
+            print(f"Response Data: {response_data}")
 
-    def __str__(self):
-        return f"{self.name} (Beneficiary for {self.user.username})"
+            # Check if the response indicates success (201 Created or 200 OK)
+            if response.status_code in (201, 200):  # Handle both successful and pending responses
+                # Retrieve the Circle ID from the response
+                circle_id = response_data.get('data', {}).get('id')
+                if circle_id:
+                    # Link the Circle ID to the model field
+                    self.bank_account_id = circle_id  # Assign the Circle ID to bank_account_id
+                    self.save()  # Save the updated model instance
+                    return circle_id  # Return the saved Circle ID
+
+                raise Exception("Circle ID not found in response data.")
+
+            # Handle unexpected responses
+            error_message = response_data.get("message", "An error occurred while linking the account")
+            raise Exception(f"Circle API Error: {error_message}")
+
+        except requests.RequestException as e:
+            raise Exception(f"Request Error: {e}")
+
+    def fetch_and_cross_match_circle_id(self):
+        """
+        Fetch bank accounts from Circle API and cross-match with local records to find the ID.
+        """
+        url = "https://api-sandbox.circle.com/v1/businessAccount/banks/wires"
+        headers = {
+            "Authorization": f"Bearer {settings.CIRCLE_API}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.get(url, headers=headers)
+            response_data = response.json()
+
+            if response.status_code == 200:  # Successfully retrieved
+                matched_circle_id = None  # Initialize variable to store matched Circle ID
+
+                for account in response_data.get('data', []):
+                    # Log the account details for debugging
+                    print("Checking Circle account:", account)
+
+                    # Check if any existing LinkedAccount matches the Circle account
+                    if (account['billingDetails']['name'] == self.billing_name and
+                            account['bankAddress']['bankName'] == self.bank_name and
+                            account['billingDetails']['line1'] == self.billing_line1 and
+                            account['billingDetails']['city'] == self.billing_city and
+                            account['billingDetails']['postalCode'] == self.billing_postal_code and
+                            account['billingDetails']['district'] == self.billing_district and
+                            account['billingDetails']['country'] == self.billing_country):
+                        matched_circle_id = account['id']  # Store the matching ID
+                        break  # Exit the loop once a match is found
+
+                if matched_circle_id:
+                    return matched_circle_id  # Return the matched Circle ID
+                else:
+                    print("No matching Circle account found.")  # Log if no match is found
+                    return None
+
+            else:
+                error_message = response_data.get("message", "Failed to retrieve accounts")
+                raise Exception(f"Circle API Error: {error_message}")
+
+        except requests.RequestException as e:
+            raise Exception(f"Request Error: {e}")
 
 
 class Alert(models.Model):
@@ -292,4 +370,3 @@ class Alert(models.Model):
 
     def __str__(self):
         return f"Alert for {self.transaction} with flags {self.flags}"
-        

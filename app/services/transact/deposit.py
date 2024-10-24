@@ -10,7 +10,7 @@ from django.conf import settings
 import uuid
 
 from app.models import Transaction, USDAccount, PlatformAccount
-from app.services.transact.utils import get_state_code
+from app.services.transact.utils.utils import get_state_code
 
 logger = logging.getLogger(__name__)
 

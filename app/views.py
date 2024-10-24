@@ -24,15 +24,14 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from app.services.transact.transfer import TransferService, InsufficientFundsError
+from app.services.transact.utils.crypto import validate_stellar_address
 from kyc.models import KYCRequest
-from kyc.serializers import KYCRequestSerializer
-from kyc.tasks import async_process_kyc  # Import the Celery task
 from . import serializers
-from .models import Transaction, USDAccount, UserProfile, Region
-from .serializers import UserSerializer, UserProfileSerializer, USDAccountSerializer, TransactionSerializer
+from .models import Transaction, USDAccount, UserProfile, Region, LinkedAccount
+from .serializers import UserSerializer, UserProfileSerializer, USDAccountSerializer, TransactionSerializer, \
+    LinkedAccountSerializer
 from .services.transact.deposit import DepositService
 from .services.transact.withdraw import WithdrawalService
-from .services.transact.withdrawal_utils import validate_stellar_address, validate_address, validate_account_number
 
 logger = logging.getLogger(__name__)
 
@@ -387,87 +386,46 @@ def initiate_deposit(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def initiate_withdrawal(request):
-    user = request.user  # Get the user from the request
+    user = request.user
     amount = request.data.get('amount')
-    method = request.data.get('method', 'circle')  # Default method is 'circle'
+    method = request.data.get('method', 'circle')
+    destination = request.data.get('destination')
 
-    # Define allowed methods
     allowed_methods = ['circle', 'crypto', 'yellow']
 
-    # Validate method
+    # Validate withdrawal method
     if method not in allowed_methods:
         logger.error(f'Invalid withdrawal method: {method} by user: {user.id}')
         return Response({'error': 'Invalid withdrawal method'}, status=status.HTTP_400_BAD_REQUEST)
 
     # Validate amount
-    if isinstance(amount, dict):
-        amount = amount.get('value')  # Extract value if amount is a dict
-
-    if amount is None:
-        logger.error(f'Amount is required for withdrawal by user: {user.id}')
-        return Response({'error': 'Amount is required'}, status=status.HTTP_400_BAD_REQUEST)
-
     try:
-        amount = Decimal(amount)  # Convert to Decimal
-    except (ValueError, InvalidOperation):
+        amount = Decimal(amount)
+    except (ValueError, TypeError, InvalidOperation):
         logger.error(f'Invalid amount format: {amount} by user: {user.id}')
-        return Response({'error': 'Invalid amount format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': 'Invalid amount format.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Handle Circle method specific requirements
+    if amount <= 0:
+        logger.error(f'Negative or zero amount: {amount} by user: {user.id}')
+        return Response({'error': 'Amount must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Handle Circle withdrawal
     if method == 'circle':
-        destination = request.data.get('destination')  # Fetch the destination
+        withdrawal_service = WithdrawalService(user, amount, method, destination=destination)
+        response_data, status_code = withdrawal_service.process()
+        return Response(response_data, status=status_code)
 
-        # Log the request data for debugging
-        logger.debug(f'Request data for user {user.id}: {request.data}')
-
-        if not destination:
-            logger.error(f'Withdrawal destination not specified for Circle withdrawal by user: {user.id}')
-            return Response({'error': 'Withdrawal destination not specified'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check if destination is a dictionary
-        if not isinstance(destination, dict):
-            logger.error(
-                f'Invalid destination format for Circle withdrawal by user: {user.id}. Expected a dictionary, got {type(destination).__name__}.')
-            return Response({'error': 'Invalid destination format; it must be an object.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        # Example validation: Check for 'address' or 'account_number' depending on your requirement
-        if 'account_number' in destination:
-            # Validate account number format if necessary
-            account_number = destination['account_number']
-            if not validate_account_number(account_number):  # Implement your account number validation logic
-                logger.error(f'Invalid account number in destination for Circle withdrawal by user: {user.id}')
-                return Response({'error': 'Invalid account number format.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        else:
-            logger.error(f'Missing required fields in destination for Circle withdrawal by user: {user.id}')
-            return Response({'error': 'Either address or account number must be provided.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-    # If method is 'crypto', validate recipient address
+    # Handle Crypto-specific validations
     recipient_address = request.data.get('recipient_address') if method == 'crypto' else None
-    if method == 'crypto' and not recipient_address:
-        logger.error(f'Recipient address is required for crypto method by user: {user.id}')
-        return Response({'error': 'Recipient address is required for this method.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Validate recipient address only if it's required
-    if recipient_address and not validate_stellar_address(recipient_address):
+    if method == 'crypto' and (not recipient_address or not validate_stellar_address(recipient_address)):
         logger.error(f'Invalid recipient address: {recipient_address} by user: {user.id}')
-        return Response({'error': 'Invalid recipient address'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': 'Invalid recipient address.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    try:
-        # Call WithdrawalService to handle the withdrawal logic
-        withdrawal_service = WithdrawalService(user=user, amount=amount, method=method,
-                                               recipient_address=recipient_address,
-                                               destination=destination if method == 'circle' else None)
-        response, status_code = withdrawal_service.process()
-        return Response(response, status=status_code)
-    except ValueError as e:
-        logger.error(f'ValueError during withdrawal processing: {str(e)} by user: {user.id}')
-        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        logger.exception(f'Unexpected error during withdrawal processing: {str(e)} by user: {user.id}')
-        return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    # Call appropriate withdrawal handler
+    withdrawal_service = WithdrawalService(user, amount, method, recipient_address=recipient_address, destination=destination)
+    response_data, status_code = withdrawal_service.process()
+
+    return Response(response_data, status=status_code)
 
 
 # Webhook for withdrawal confirmation
@@ -525,5 +483,36 @@ def health_check(request):
     return Response({"status": "healthy"}, status=status.HTTP_200_OK)
 
 
+class LinkedAccountView(APIView):
+    def post(self, request):
+        """
+        Create and link a bank account to Circle.
+        """
+        serializer = LinkedAccountSerializer(data=request.data)
+        if serializer.is_valid():
+            linked_account = serializer.save()  # Create and save the LinkedAccount instance
 
+            # Call the `link_account_to_circle` method to link the account with Circle
+            try:
+                circle_id = linked_account.link_account_to_circle()  # The method returns the Circle ID
+                return Response({'circle_id': circle_id}, status=status.HTTP_201_CREATED)
+            except Exception as e:
+                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def get(self, request, pk):
+        """
+        Fetch and cross-match Circle ID with an existing account.
+        """
+        try:
+            linked_account = LinkedAccount.objects.get(pk=pk)
+            circle_id = linked_account.fetch_and_cross_match_circle_id()
+            if circle_id:
+                return Response({'circle_id': circle_id}, status=status.HTTP_200_OK)
+            return Response({'message': 'No matching Circle account found.'}, status=status.HTTP_404_NOT_FOUND)
+        except LinkedAccount.DoesNotExist:
+            return Response({'error': 'Account not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

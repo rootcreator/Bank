@@ -1,33 +1,22 @@
 import logging
 from decimal import Decimal
 
-from stellar_sdk import transaction
-
 from app.models import USDAccount, Transaction
-from app.services.stellar_network_service import process_stellar_withdrawal, process_stellar_to_circle_withdrawal
-from app.services.transact.circle import CircleAPI, get_user_bank_account_id
+from app.services.transact.utils.stellar_network_service import process_stellar_withdrawal, has_trustline
 from app.services.transact.transfer import InsufficientFundsError
-from app.services.transact.withdrawal_utils import (process_allbridge_withdrawal,
-                                                    process_simpleswap_withdrawal, get_user_virtual_balance,
-                                                    is_stellar_address,
-                                                    supports_usdc, update_user_virtual_balance
-                                                    )
+from app.services.transact.utils.transfer_stellar_USDC_to_circle_wallet import send_stellar_usdc_to_circle, \
+    create_bank_account_recipient, initiate_bank_withdrawal, confirm_bank_transfer
+from app.services.transact.utils.crypto import is_stellar_address, supports_usdc, get_user_virtual_balance, \
+    process_allbridge_withdrawal
 
 logger = logging.getLogger(__name__)
+
+BASE_URL = "https://api.circle.com/v1"
+BANK_ACCOUNT_CREATE_URL = f"{BASE_URL}/banks/wires"
 
 
 class WithdrawalService:
     def __init__(self, user, amount, method, to_currency=None, recipient_address=None, destination=None):
-        """
-        Handles withdrawal requests from USD to other currencies or methods.
-
-        :param user: The user requesting the withdrawal.
-        :param amount: The amount of USD to withdraw.
-        :param method: The method of withdrawal ('circle', 'yellow', 'crypto').
-        :param to_currency: The target cryptocurrency for crypto withdrawals (optional).
-        :param recipient_address: The address to send the converted cryptocurrency (optional).
-        :param destination: The withdrawal destination for Circle method (optional).
-        """
         self.user = user
         self.amount = Decimal(amount)
         self.method = method
@@ -36,14 +25,12 @@ class WithdrawalService:
         self.destination = destination  # For Circle withdrawals
 
     def validate_balance(self):
-        """Ensures that the user has sufficient funds for withdrawal."""
         wallet = self.get_user_wallet()
         if wallet.balance < self.amount:
             raise InsufficientFundsError("Insufficient funds")
         return wallet
 
     def get_user_wallet(self):
-        """Fetches the user's wallet, handling exceptions."""
         try:
             return USDAccount.objects.get(user=self.user)
         except USDAccount.DoesNotExist:
@@ -51,7 +38,6 @@ class WithdrawalService:
             raise ValueError("USD account not found.")
 
     def create_transaction(self, status="pending"):
-        """Creates a withdrawal transaction with the specified status."""
         try:
             return Transaction.objects.create(
                 user=self.user,
@@ -65,7 +51,6 @@ class WithdrawalService:
             raise ValueError("Error creating withdrawal transaction.")
 
     def update_user_balance(self, wallet):
-        """Updates the user's balance after a successful withdrawal."""
         try:
             wallet.balance -= self.amount
             wallet.save()
@@ -75,7 +60,6 @@ class WithdrawalService:
             raise ValueError("Error updating user balance.")
 
     def call_gateway(self):
-        """Calls the appropriate withdrawal method based on `self.method`."""
         if self.method == 'circle':
             return self.handle_circle_withdrawal(self.amount, self.destination)
         elif self.method == 'yellow':
@@ -87,20 +71,17 @@ class WithdrawalService:
             raise ValueError(f"Unknown withdrawal method: {self.method}")
 
     def process(self):
-        """Main method to process the withdrawal."""
         try:
-            # Validate that a recipient address is provided for crypto withdrawals
             if self.method == 'crypto' and not self.recipient_address:
                 logger.error(f"Recipient address is None for user {self.user.id}")
                 return {"error": "Recipient address must be provided."}, 400
 
-            wallet = self.validate_balance()  # Step 1: Validate user balance
-            result = self.call_gateway()  # Step 2: Call the appropriate gateway
+            wallet = self.validate_balance()
+            result = self.call_gateway()
 
             if result.get("status") == "success":
-                self.update_user_balance(wallet)  # Step 3: Update user balance
-                self.create_transaction(status="success")  # Step 4: Log transaction
-
+                self.update_user_balance(wallet)
+                self.create_transaction(status="success")
                 logger.info(f"Withdrawal successful for user {self.user.id}: {result.get('transaction_id')}")
                 return {"message": "Withdrawal initiated successfully."}, 200
             else:
@@ -111,115 +92,75 @@ class WithdrawalService:
             logger.error(f"Error during withdrawal for user {self.user.id}: {str(e)}")
             return {"error": str(e)}, 400
 
-    # --- Crypto Withdrawal Logic ---
+    # Handle crypto withdrawals
     def withdraw_crypto(self):
-        """Handles cryptocurrency withdrawals."""
-        user_balance = get_user_virtual_balance(self.user)  # Check user's virtual balance
+        # Get user balance and check if there are sufficient funds
+        user_balance = get_user_virtual_balance(self.user)
+
         if self.amount > user_balance:
+            logger.error(
+                f"Insufficient virtual balance for user {self.user.id}. Requested: {self.amount}, Available: {user_balance}"
+            )
             raise InsufficientFundsError("Insufficient virtual balance")
 
-        # Check if recipient_address is None
+        # Check if recipient address is provided
         if not self.recipient_address:
             logger.error(f"Recipient address is None for user {self.user.id}")
             raise ValueError("Recipient address must be provided.")
 
+        # Stellar withdrawal process
         if is_stellar_address(self.recipient_address):
-            return self._process_stellar_withdrawal()
+            if not has_trustline(self.recipient_address, asset_code="USDC"):
+                logger.error(f"Recipient {self.recipient_address} does not have a trustline for USDC")
+                return {"error": "Recipient does not have a trustline for USDC."}
+
+            return process_stellar_withdrawal(self.user, self.recipient_address, self.amount)
+
+        # Allbridge USDC withdrawal process
         elif supports_usdc(self.recipient_address):
-            return self._process_allbridge_withdrawal()
+            return process_allbridge_withdrawal(self.recipient_address, self.amount)
+
+        # Unsupported blockchain
         else:
-            return self._process_simpleswap_withdrawal()
+            logger.error(
+                f"Blockchain not supported for user {self.user.id} with recipient address {self.recipient_address}"
+            )
+            return {"error": "Blockchain Not Supported"}
 
-    def _process_stellar_withdrawal(self):
-        """Processes Stellar network withdrawals."""
-        try:
-            transaction_status = process_stellar_withdrawal(self.user, self.recipient_address, self.amount)
-            return self._handle_withdrawal_result(transaction_status)
-        except Exception as e:
-            logger.error(f"Error in Stellar withdrawal: {str(e)}")
-            return {"error": f"Stellar withdrawal failed: {str(e)}"}
+    # Handle Circle withdrawal
+    def handle_circle_withdrawal(self, stellar_amount, bank_account_info):
+        # Step 1: Transfer USDC from Stellar to Circle
+        print(f"Transferring {stellar_amount} USDC from Stellar to Circle...")
+        transaction_response = send_stellar_usdc_to_circle(amount=stellar_amount)
 
-    def _process_allbridge_withdrawal(self):
-        """Processes AllBridge network withdrawals for USDC-supported blockchains."""
-        try:
-            transaction_status = process_allbridge_withdrawal(self.user, self.recipient_address, self.amount)
-            return self._handle_withdrawal_result(transaction_status)
-        except Exception as e:
-            logger.error(f"Error in AllBridge withdrawal: {str(e)}")
-            return {"error": f"AllBridge withdrawal failed: {str(e)}"}
+        if transaction_response.get("successful"):
+            print("USDC successfully transferred to Circle.")
 
-    def _process_simpleswap_withdrawal(self):
-        """Processes withdrawals using SimpleSwap for non-USDC cryptocurrencies."""
-        try:
-            transaction_status = process_simpleswap_withdrawal(self.user, self.recipient_address, self.amount)
-            return self._handle_withdrawal_result(transaction_status)
-        except Exception as e:
-            logger.error(f"Error in SimpleSwap withdrawal: {str(e)}")
-            return {"error": f"SimpleSwap withdrawal failed: {str(e)}"}
+            # Step 2: Create bank account recipient
+            print("Creating bank account recipient...")
+            recipient_id = create_bank_account_recipient(
+                bank_account_info["account_number"],
+                bank_account_info["routing_number"],
+            )
 
-    def _handle_withdrawal_result(self, transaction_status):
-        """Handles the result of a withdrawal operation."""
-        if transaction_status == "success":
-            try:
-                with transaction.atomic():  # Atomic transaction to ensure data integrity
-                    update_user_virtual_balance(self.user.id, self.amount)  # Deduct virtual balance
-                return {"status": "success", "message": "Withdrawal successful"}
-            except Exception as e:
-                logger.error(f"Error updating virtual balance: {str(e)}")
-                return {"error": f"Withdrawal failed: {str(e)}"}
+            if recipient_id:
+                # Step 3: Initiate bank withdrawal
+                print("Initiating bank withdrawal...")
+                transaction_id = initiate_bank_withdrawal(stellar_amount, recipient_id)
+
+                if transaction_id:
+                    # Step 4: Confirm the bank transfer
+                    print("Confirming the bank transfer...")
+                    status = confirm_bank_transfer(transaction_id)
+
+                    if status == "confirmed":
+                        print("Withdrawal confirmed, funds have been transferred to the bank.")
+                    else:
+                        print(f"Transfer status: {status}")
+                else:
+                    print("Failed to initiate bank withdrawal.")
+            else:
+                print("Failed to create bank account recipient.")
         else:
-            return {"error": "Withdrawal failed"}
+            print("Failed to transfer USDC to Circle.")
 
-    # --- Circle Withdrawal Logic ---
-    def handle_circle_withdrawal(self,withdrawal_amount, account_numer):
-        """Handles Circle withdrawal logic."""
-        try:
-            # Step 1: Validate user balance
-            user_balance = get_user_virtual_balance(self.user)
-            if user_balance < self.amount:
-                logger.error(
-                    f"Insufficient funds for user {self.user.id}. Available: {user_balance}, Required: {self.amount}")
-                return {"error": "Insufficient funds."}
-
-            # Step 2: Withdraw from Stellar (Assuming this is handled by your existing logic)
-            stellar_withdrawal_response = process_stellar_to_circle_withdrawal(self.user, self.amount)
-
-            if stellar_withdrawal_response != "success":
-                logger.error(f"Withdrawal from Stellar failed for user {self.user.id}: {stellar_withdrawal_response}")
-                return {"error": "Withdrawal from Stellar failed."}
-
-            # Step 3: Prepare payout data for Circle
-            payout_data = {
-                "amount": str(self.amount),  # Convert amount to string
-                "currency": "USD",
-                "recipient": {
-                    "bank_account_id": get_user_bank_account_id(self.user),  # Fetch the bank account ID
-                    "type": "ACH"  # or "wire" depending on the type of transfer
-                },
-                "description": "Withdrawal to bank account"
-            }
-
-            # Step 4: Create Circle payout
-            circle_response = CircleAPI.create_payout(payout_data)
-            if "error" in circle_response:
-                logger.error(f"Circle payout creation failed for user {self.user.id}: {circle_response['error']}")
-                return {"error": "Circle payout creation failed."}
-
-            logger.info(f"Circle withdrawal successful for user {self.user.id}: {circle_response}")
-            return {"status": "success", "message": "Withdrawal initiated successfully.",
-                    "transaction_id": circle_response.get("id")}
-
-        except Exception as e:
-            logger.error(f"Error during Circle withdrawal for user {self.user.id}: {str(e)}")
-            return {"error": str(e)}
-
-    # --- Yellow Withdrawal Logic ---
-    def handle_yellow_withdrawal(self):
-        """Handles Yellow withdrawal logic."""
-        try:
-            # Placeholder for Yellow integration
-            logger.info(f"Yellow withdrawal initiated for user {self.user.id}")
-            return {"status": "success", "message": "Yellow withdrawal successful"}
-        except Exception as e:
-            logger.error(f"Error during Yellow withdrawal for user {self.user.id}: {str(e)}")
-            return {"error": f"Yellow withdrawal failed: {str(e)}"}
