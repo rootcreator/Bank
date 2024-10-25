@@ -4,8 +4,10 @@ from decimal import Decimal
 from typing import Optional
 
 import requests
+from django.shortcuts import get_object_or_404
 from stellar_sdk import Server, Keypair, TransactionBuilder, Network, Asset
 
+from app.models import LinkedAccount
 from bank.settings import CIRCLE_API
 
 # Logging configuration
@@ -15,12 +17,15 @@ logger = logging.getLogger(__name__)
 # Circle API and Stellar configuration
 STELLAR_SERVER = Server("https://horizon-testnet.stellar.org/")
 CIRCLE_API_URL = "https://api-sandbox.circle.com/v1"
-#CIRCLE_API = "your_circle_api_key"  # Securely manage your API key
 STELLAR_PUBLIC_KEY = "GCA3RMKZWC7ZHFRBXAPKCWSP3FOWNRRX2NR5K4QZDOKSZVJSA3FSIZKQ"
 STELLAR_SECRET_KEY = "SC34UKYKGMAUFWRZNB7ELZDKHJILDMR4SYSKD3B2MEM5YDMGF7US2M3L"
 CIRCLE_STELLAR_USDC_ADDRESS = "GAYF33NNNMI2Z6VNRFXQ64D4E4SF77PM46NW3ZUZEEU5X7FCHAZCMHKU"
 USDC_ASSET = Asset("USDC", "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5")
 CIRCLE_WALLET_ID = "1017217590"
+headers = {
+    "Authorization": CIRCLE_API,  # Use actual API key
+    "Content-Type": "application/json"
+}
 
 
 def generate_idempotency_key():
@@ -156,7 +161,7 @@ def process_circle_withdrawal(bank_details, billing_details, amount, currency):
         logger.error(f"Error during Circle withdrawal: {e}")
 
 
-def create_bank_account_recipient(account_holder_name: str, account_number: str, routing_number: str, billing_address: dict) -> dict:
+"""def create_bank_account_recipient(account_holder_name: str, account_number: str, routing_number: str, billing_address: dict) -> dict:
     url = f"{CIRCLE_API_URL}/businessAccount/banks/wires"
     headers = {
         "Authorization": f"Bearer {CIRCLE_API}",
@@ -179,11 +184,80 @@ def create_bank_account_recipient(account_holder_name: str, account_number: str,
         return response.json()
     else:
         logger.error(f"Failed to create bank account recipient: {response.status_code}, {response.text}")
-        return {}
+        return {}"""
 
 
+def create_bank_account_recipient(bank_details):
+    """
+    Links a bank account in Circle using the provided bank details.
 
-def initiate_bank_withdrawal(amount, recipient_id):
+    Args:
+        bank_details (dict): A dictionary containing the bank account information,
+            e.g., {"accountNumber": "1234567890", "routingNumber": "012345678", ...}
+
+    Returns:
+        str: The Circle ID of the newly linked bank account.
+    """
+
+    # Replace with the actual Circle API endpoint for linking bank accounts
+    circle_api_url = "https://api.circle.com/v1/bank-accounts"
+
+    # Prepare the request data using the bank details
+    data = {
+        "accountType": "CHECKING",  # or "SAVINGS"
+        "accountNumber": bank_details["account_number"],
+        "routingNumber": bank_details["routing_number"],
+        "accountHolderName": bank_details["accountHolderName"],
+        "accountHolderType": "INDIVIDUAL",  # or "BUSINESS"
+        "currency": "USD",
+        "bankName": bank_details.get("bankName", ""),  # Optional
+        "bankAddress": {
+            "street": bank_details.get("bankAddress", {}).get("street", ""),
+            "city": bank_details.get("bankAddress", {}).get("city", ""),
+            "state": bank_details.get("bankAddress", {}).get("state", ""),
+            "postalCode": bank_details.get("bankAddress", {}).get("postalCode", ""),
+            "country": bank_details.get("bankAddress", {}).get("country", "")
+        },
+        "billingAddress": {
+            "street": bank_details.get("billingAddress", {}).get("street", ""),
+            "city": bank_details.get("billingAddress", {}).get("city", ""),
+            "state": bank_details.get("billingAddress", {}).get("state", ""),
+            "postalCode": bank_details.get("billingAddress", {}).get("postalCode", ""),
+            "country": bank_details.get("billingAddress", {}).get("country", "")
+        }
+    }
+
+    # Set the necessary headers, including your Circle API key
+    headers = {
+        "Authorization": "Bearer YOUR_API_KEY",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        # Log the data being sent for debugging
+        logger.info(f"Data sent to Circle API: {data}")
+
+        # Send the POST request to Circle's API
+        response = requests.post(circle_api_url, json=data, headers=headers)
+
+        # Log the response for debugging
+        logger.info(f"Response from Circle: {response.status_code} - {response.text}")
+
+        # Handle the response based on the status code
+        if response.status_code == 201:
+            bank_account_circle_id = response.json()["id"]
+            return bank_account_circle_id
+        else:
+            raise Exception(f"Circle API returned an error: {response.json()}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error: {e}")
+        raise
+    except KeyError as e:
+        logger.error(f"Missing key in data dictionary: {e}")
+        raise
+
+
+"""def initiate_bank_withdrawal(amount, recipient_id):
     url = f"{CIRCLE_API_URL}/payouts"
     headers = {
         "Authorization": f"Bearer {CIRCLE_API}",
@@ -212,7 +286,63 @@ def initiate_bank_withdrawal(amount, recipient_id):
         return transaction_id
     else:
         print(f"Failed to initiate withdrawal: {response.status_code}, {response.text}")
-        return None
+        return None"""
+
+
+def initiate_bank_withdrawal(user, amount, bank_account_id=None, bank_details=None):
+    """
+        Initiates a payout to the user by linking a bank account or selecting an existing one.
+        Params:
+            - user: The user making the request
+            - amount: The amount to be transferred
+            - bank_account_id: (Optional) ID of an already linked bank account
+            - bank_details: (Optional) New bank details if the account is being linked for the first time.
+                            Should be a dict with accountNumber, routingNumber, etc.
+        """
+
+    # Step 1: Fetch or link a bank account
+    if bank_account_id:
+        # Fetch existing bank account from the LinkedAccount model
+        linked_account = get_object_or_404(LinkedAccount, id=bank_account_id, user=user)
+        bank_account_circle_id = linked_account.circle_bank_account_id  # ID stored after account is linked in Circle
+    elif bank_details:
+        # Link a new bank account using Circle API (Assuming there’s a separate API for linking)
+        bank_account_circle_id = create_bank_account_recipient(bank_details)
+    else:
+        raise ValueError("Either a bank account ID or bank details must be provided.")
+
+    # Step 2: Create the payout request data
+    data = {
+        "amount": {
+            "currency": "USD",
+            "amount": str(amount)
+        },
+        "trackingRef": f"payout-{user.id}-{amount}",  # Unique reference per user transaction
+        "destination": {
+            "type": "bank-account",
+            "id": bank_account_circle_id
+        }
+    }
+
+    try:
+        # Step 3: Send the payout request
+        response = requests.post(CIRCLE_API_URL, json=data, headers=headers)
+
+        # Step 4: Error handling based on the response status
+        if response.status_code == 201:
+            return response.json()  # Payout successful
+        elif response.status_code == 400:
+            raise Exception("Bad request. Check the input data.")
+        elif response.status_code == 401:
+            raise Exception("Unauthorized. Invalid API key.")
+        elif response.status_code == 404:
+            raise Exception("Bank account not found.")
+        else:
+            raise Exception(f"An error occurred: {response.text}")
+
+    except requests.exceptions.RequestException as e:
+        # Handle network-related errors
+        raise Exception(f"Network error: {e}")
 
 
 def confirm_bank_transfer(transaction_id):

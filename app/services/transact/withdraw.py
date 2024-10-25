@@ -129,7 +129,7 @@ class WithdrawalService:
 
     # Handle Circle withdrawal
     @staticmethod
-    def handle_circle_withdrawal(stellar_amount: str, bank_account_info: dict):
+    def handle_circle_withdrawal(stellar_amount: str, bank_details: dict):
         """
         Handles the full Circle withdrawal process:
         1. Transfers USDC from Stellar to Circle.
@@ -138,7 +138,7 @@ class WithdrawalService:
 
         Args:
             stellar_amount (str): The amount of USDC to be transferred.
-            bank_account_info (dict): Bank account details (name, account number, routing number).
+            bank_details (dict): Bank account details (name, account number, routing number).
 
         Returns:
             bool: True if the entire process completes successfully, False otherwise.
@@ -154,9 +154,7 @@ class WithdrawalService:
             logger.info("USDC successfully transferred to Circle.")
 
             # Step 2: Create bank account recipient
-            recipient_info = create_bank_account_recipient(bank_account_info, 'account_number',
-                                                           'routing_number', 'billing_address'
-)
+            recipient_info = create_bank_account_recipient(bank_details)
             if not recipient_info:
                 raise Exception("Failed to create bank account recipient.")
 
