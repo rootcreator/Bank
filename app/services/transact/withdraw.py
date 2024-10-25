@@ -5,7 +5,7 @@ from app.models import USDAccount, Transaction
 from app.services.transact.utils.stellar_network_service import process_stellar_withdrawal, has_trustline
 from app.services.transact.transfer import InsufficientFundsError
 from app.services.transact.utils.transfer_stellar_USDC_to_circle_wallet import send_stellar_usdc_to_circle, \
-    create_bank_account_recipient, initiate_bank_withdrawal, confirm_bank_transfer
+    CircleWithdrawalProvider, create_bank_account_recipient, initiate_bank_withdrawal, confirm_bank_transfer
 from app.services.transact.utils.crypto import is_stellar_address, supports_usdc, get_user_virtual_balance, \
     process_allbridge_withdrawal
 
@@ -128,39 +128,55 @@ class WithdrawalService:
             return {"error": "Blockchain Not Supported"}
 
     # Handle Circle withdrawal
-    def handle_circle_withdrawal(self, stellar_amount, bank_account_info):
-        # Step 1: Transfer USDC from Stellar to Circle
-        print(f"Transferring {stellar_amount} USDC from Stellar to Circle...")
-        transaction_response = send_stellar_usdc_to_circle(amount=stellar_amount)
+    @staticmethod
+    def handle_circle_withdrawal(stellar_amount: str, bank_account_info: dict):
+        """
+        Handles the full Circle withdrawal process:
+        1. Transfers USDC from Stellar to Circle.
+        2. Creates a bank account recipient for withdrawal.
+        3. Initiates and confirms the bank withdrawal.
 
-        if transaction_response.get("successful"):
-            print("USDC successfully transferred to Circle.")
+        Args:
+            stellar_amount (str): The amount of USDC to be transferred.
+            bank_account_info (dict): Bank account details (name, account number, routing number).
+
+        Returns:
+            bool: True if the entire process completes successfully, False otherwise.
+        """
+        try:
+            # Step 1: Transfer USDC from Stellar to Circle
+            logger.info(f"Transferring {stellar_amount} USDC from Stellar to Circle...")
+            transaction_response = send_stellar_usdc_to_circle(stellar_amount)
+
+            if not transaction_response.get("successful"):
+                raise Exception("Failed to transfer USDC to Circle.")
+
+            logger.info("USDC successfully transferred to Circle.")
 
             # Step 2: Create bank account recipient
-            print("Creating bank account recipient...")
-            recipient_id = create_bank_account_recipient(
-                bank_account_info["account_number"],
-                bank_account_info["routing_number"],
-            )
+            recipient_info = create_bank_account_recipient(bank_account_info, 'account_number',
+                                                           'routing_number', 'billing_address'
+)
+            if not recipient_info:
+                raise Exception("Failed to create bank account recipient.")
 
-            if recipient_id:
-                # Step 3: Initiate bank withdrawal
-                print("Initiating bank withdrawal...")
-                transaction_id = initiate_bank_withdrawal(stellar_amount, recipient_id)
+            # Step 3: Initiate bank withdrawal
+            logger.info("Initiating bank withdrawal...")
+            transaction_id = initiate_bank_withdrawal(stellar_amount, recipient_info["id"])
+            if not transaction_id:
+                raise Exception("Failed to initiate bank withdrawal.")
 
-                if transaction_id:
-                    # Step 4: Confirm the bank transfer
-                    print("Confirming the bank transfer...")
-                    status = confirm_bank_transfer(transaction_id)
-
-                    if status == "confirmed":
-                        print("Withdrawal confirmed, funds have been transferred to the bank.")
-                    else:
-                        print(f"Transfer status: {status}")
-                else:
-                    print("Failed to initiate bank withdrawal.")
+            # Step 4: Confirm bank transfer
+            logger.info("Confirming the bank transfer...")
+            status = confirm_bank_transfer(transaction_id)
+            if status == "confirmed":
+                logger.info("Withdrawal confirmed, funds have been transferred to the bank.")
+                return True
             else:
-                print("Failed to create bank account recipient.")
-        else:
-            print("Failed to transfer USDC to Circle.")
+                logger.warning(f"Transfer status: {status}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error during Circle withdrawal process: {e}")
+            return False
 
