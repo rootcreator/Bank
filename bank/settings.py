@@ -207,7 +207,7 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
 
-SERVER_JWT_KEY = '0fteaFpuDHH3J07b5BiYh8suLU_u1Sw67soOY'
+SERVER_JWT_KEY = 'xxxxxxxxxxxx'
 
 env = environ.Env()
 environ.Env.read_env()  # Loads environment variables from the .env file
